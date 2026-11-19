@@ -46,6 +46,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pdfium"
           curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/download/$PDFIUM_TAG/$archive" | tar xz -C "$RUNNER_TEMP/pdfium"
           echo "FINX_PDFIUM=$RUNNER_TEMP/pdfium/lib/$lib" >> "$GITHUB_ENV"
+      # The spatial_script sandbox e2e test (macOS only) runs Python through uv.
+      - uses: astral-sh/setup-uv@v6
+        if: runner.os == 'macOS'
       - name: Rust tests, every crate
         run: cargo test --locked --workspace --no-fail-fast
       - uses: pnpm/action-setup@v4
