@@ -77,7 +77,7 @@ export function BotPage({ bot }: { bot: BotSummary }) {
   const dot = routineDot(bot.routines);
   return (
     <DocContext.Provider value={panels.opener}>
-    <div className={`spage bot ${panels.browser || panels.files || settings || routines ? "bgopen" : ""} ${panels.max ? "brmax" : ""}`}>
+    <div className={`spage bot ${panels.browser || panels.files || settings || routines ? "bgopen" : ""} ${panels.dual ? "dual" : ""} ${panels.max ? "brmax" : ""}`}>
       <div className="scol">
         <GlassBar className="ctool drag">
           <SidebarToggle />

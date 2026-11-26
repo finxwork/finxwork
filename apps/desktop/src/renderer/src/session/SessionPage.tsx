@@ -29,7 +29,7 @@ export function SessionPage({ s }: { s: ListSession }) {
   const background = st.background && agents > 0;
   const cwd = view?.info.cwd;
   const panels = useSidePanels(s.session_id, view, background);
-  const { browser, files, max } = panels;
+  const { browser, files, max, dual } = panels;
   const layout = layoutOf(st);
   const info = layout.card !== "hidden" && !background && !browser && !files;
   const yours = useYours(s.session_id, view);
@@ -46,7 +46,7 @@ export function SessionPage({ s }: { s: ListSession }) {
   }, [asked]);
   return (
     <DocContext.Provider value={panels.opener}>
-    <div className={`spage ${browser || files ? "bgopen" : ""} ${max ? "brmax" : ""}`}>
+    <div className={`spage ${browser || files ? "bgopen" : ""} ${dual ? "dual" : ""} ${max ? "brmax" : ""}`}>
       <div className="scol">
         <GlassBar className="ctool drag">
           <SidebarToggle />

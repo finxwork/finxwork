@@ -13,6 +13,7 @@ use finx_protocol::files::FilesWatchParams;
 use finx_protocol::files::FilesWriteParams;
 use finx_protocol::api::InitializeParams;
 use finx_protocol::api::InitializeResult;
+use finx_protocol::api::ModelsCompleteParams;
 use finx_protocol::api::ModelsListResult;
 use finx_protocol::api::ModelsRefreshParams;
 use finx_protocol::api::ModelsShowParams;
@@ -533,6 +534,8 @@ impl NativeProtocol {
             }
             method::MCP_TOOLS => self.call(id, params, conn, |server, p: McpServerParams| async move { server.mcp_tools(p).await }),
             method::MCP_CHECK => self.call(id, params, conn, |server, p: McpServerParams| async move { server.mcp_check(p).await }),
+            method::MCP_CHECK_UPDATE => self.call(id, params, conn, |server, p: McpServerParams| async move { server.mcp_check_update(p).await }),
+            method::MCP_UPGRADE => self.call(id, params, conn, |server, p: McpServerParams| async move { server.mcp_upgrade(p).await }),
             method::MCP_PROBE => {
                 let conn2 = conn.clone();
                 self.call(id, params, conn, move |server, p: McpProbeParams| async move { server.mcp_probe(p, &conn2).await })
@@ -681,9 +684,20 @@ impl NativeProtocol {
                     conn.send(reply(&id, result));
                 });
             }
+            method::MODELS_COMPLETE => {
+                self.call(id, params, conn, |server, p: ModelsCompleteParams| async move {
+                    server.complete_model(p).await
+                });
+            }
             method::SERVER_SHUTDOWN => {
-                conn.send(finx_rpc::response(id, &json!({})));
-                server.request_shutdown();
+                // Flush the reply before triggering shutdown so the transport does not exit
+                // and drop the socket before the client receives the acknowledgement.
+                let flushed = conn.send_and_flush(finx_rpc::response(id, &json!({})));
+                let server = server.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), flushed).await;
+                    server.request_shutdown();
+                });
             }
             method::SESSIONS_SUBSCRIBE => {
                 match finx_rpc::params::<Option<SessionListParams>>(params) {
@@ -736,6 +750,32 @@ impl NativeProtocol {
                     tokio::spawn(async move {
                         let reply_id = id.clone();
                         match server.bots_add(p).await {
+                            Ok(result) => conn.send(finx_rpc::response(&reply_id, &serde_json::json!(result))),
+                            Err(err) => conn.send_error(Some(&reply_id), &err),
+                        }
+                    });
+                }
+                Err(err) => conn.send_error(Some(id), &err),
+            },
+            method::BOTS_CREDENTIAL => match finx_rpc::params::<finx_protocol::bot::BotCredentialParams>(params) {
+                Ok(p) => {
+                    let (conn, id) = (conn.clone(), id.clone());
+                    tokio::spawn(async move {
+                        let reply_id = id.clone();
+                        match server.bots_credential(p).await {
+                            Ok(result) => conn.send(finx_rpc::response(&reply_id, &serde_json::json!(result))),
+                            Err(err) => conn.send_error(Some(&reply_id), &err),
+                        }
+                    });
+                }
+                Err(err) => conn.send_error(Some(id), &err),
+            },
+            method::BOTS_REREAD => match finx_rpc::params::<BotIdParams>(params) {
+                Ok(p) => {
+                    let (conn, id) = (conn.clone(), id.clone());
+                    tokio::spawn(async move {
+                        let reply_id = id.clone();
+                        match server.bots_reread(&p.bot_id).await {
                             Ok(result) => conn.send(finx_rpc::response(&reply_id, &serde_json::json!(result))),
                             Err(err) => conn.send_error(Some(&reply_id), &err),
                         }

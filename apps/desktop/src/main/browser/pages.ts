@@ -10,6 +10,9 @@ import { preferences } from "../preferences";
 import { allEngines } from "../../shared/search";
 import { language } from "../../shared/i18n";
 import { validBox, webComment, type AnnotationBox, type BrowserComment } from "../../shared/annotations";
+import type { TranslationBlock, TranslationState } from "../../shared/translation";
+import { completeWithKernel } from "../kernel";
+import { TabTranslator } from "./translate";
 
 // The embedded browser's pages (browser-design §8.3.4): each tab is a WebContentsView with
 // its debugger attached, on a partition of its own, apart from the app's pages and from the
@@ -33,6 +36,8 @@ type Tab = {
   events: PageEvents;
   seq: number;
   annotating?: boolean;
+  translating?: boolean;
+  isPdf?: boolean;
   domReady?: boolean;
   managed?: boolean;
   asksAddress?: boolean;
@@ -54,11 +59,18 @@ let seq = 0;
 let downloadDir: string | null = null;
 let reportDownload: ((d: Download) => void) | null = null;
 let sessionReady = false;
+const translator = new TabTranslator(completeWithKernel);
 function annotationState(tab: Tab) {
   return { url: tab.view.webContents.getURL(), enabled: !!tab.annotating, language: language() };
 }
 function syncAnnotations(tab: Tab) {
   if (!tab.view.webContents.isDestroyed()) tab.view.webContents.send("browser-annotation-state", annotationState(tab));
+}
+function translationState(tab: Tab): TranslationState {
+  return { url: tab.view.webContents.getURL(), enabled: !!tab.translating, targetLanguage: language() };
+}
+function syncTranslation(tab: Tab) {
+  if (!tab.view.webContents.isDestroyed()) tab.view.webContents.send("browser-translation-state", translationState(tab));
 }
 // Only the embedded tab's isolated preload can use this channel. No app bridge is
 // exposed to the website, and subframes and requests from a page since left are rejected.
@@ -82,6 +94,40 @@ ipcMain.handle("browser-annotation", async (event, request: unknown) => {
     win.webContents.send("browser-comment", message);
   } else if (r.action !== "read") throw new Error("Invalid annotation request");
   return annotationState(tab);
+});
+
+ipcMain.handle("browser-translate", async (event, request: unknown) => {
+  const tab = [...tabs.values()].find((t) => t.view.webContents === event.sender);
+  if (!tab || event.senderFrame !== event.sender.mainFrame || !request || typeof request !== "object") {
+    throw new Error("Invalid translation source");
+  }
+  const r = request as Record<string, unknown>;
+  const url = event.sender.getURL();
+  if (r.url !== url || !/^https?:/.test(url)) return { translations: {}, cancelled: true };
+  if (r.action === "disable") {
+    tab.translating = false;
+    translator.cancel(tab.targetId);
+    broadcast();
+    return translationState(tab);
+  }
+  if (r.action !== "batch") throw new Error("Invalid translation request");
+  if (!tab.translating) return { translations: {}, cancelled: true };
+  const rawItems = Array.isArray(r.items) ? r.items : [];
+  const items: TranslationBlock[] = rawItems
+    .filter((x): x is TranslationBlock => !!x && typeof x === "object" && typeof (x as TranslationBlock).id === "string" && typeof (x as TranslationBlock).text === "string")
+    .slice(0, 32);
+  if (items.length === 0) return { translations: {} };
+  const title = typeof r.title === "string" ? r.title : event.sender.getTitle();
+  const targetLanguage = typeof r.targetLanguage === "string" && r.targetLanguage ? r.targetLanguage : language();
+  try {
+    return await translator.translateBatch(tab.targetId, targetLanguage, title, items);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!tab.translating || /cancelled|aborted|disconnected/i.test(message)) {
+      return { translations: {}, cancelled: true };
+    }
+    throw err;
+  }
 });
 
 /** What the person pointed at as it looks (PNG, base64), with a little of the page around it; none if it is out of sight. */
@@ -118,6 +164,22 @@ function browserSession() {
     const headers = details.requestHeaders;
     if (hintsGo(details.url) && !Object.keys(headers).some((h) => h.toLowerCase() === "sec-ch-ua")) Object.assign(headers, hints);
     callback({ requestHeaders: headers });
+  });
+  s.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType === "mainFrame" && details.webContentsId !== undefined) {
+      const tab = [...tabs.values()].find((t) => !t.view.webContents.isDestroyed() && t.view.webContents.id === details.webContentsId);
+      if (tab) {
+        const headers = details.responseHeaders ?? {};
+        const ctKey = Object.keys(headers).find((k) => k.toLowerCase() === "content-type");
+        const ct = ctKey ? headers[ctKey].join(";").toLowerCase() : "";
+        const nextPdf = ct.includes("application/pdf") || ct.includes("application/x-pdf");
+        if (!!tab.isPdf !== nextPdf) {
+          tab.isPdf = nextPdf;
+          broadcast();
+        }
+      }
+    }
+    callback({ cancel: false });
   });
   // Sites see Chrome, not Electron or the app: some serve a reduced page to browsers they do
   // not know (Google's sign-in, for one, without its images).
@@ -201,10 +263,17 @@ export const electronPages: PageHost = {
     // Annotating needs only the document, not every image and ad still loading:
     // the page's DOM is ready from dom-ready, and a stopped load keeps the page it shows.
     wc.on("did-stop-loading", () => { tab.domReady = true; broadcast(); });
-    wc.on("dom-ready", () => { tab.domReady = true; syncAnnotations(tab); broadcast(); });
-    wc.on("did-navigate-in-page", (_e, _url, mainFrame) => { if (mainFrame) syncAnnotations(tab); });
+    wc.on("dom-ready", () => { tab.domReady = true; syncAnnotations(tab); syncTranslation(tab); broadcast(); });
+    wc.on("did-navigate-in-page", (_e, _url, mainFrame) => { if (mainFrame) { syncAnnotations(tab); syncTranslation(tab); } });
     wc.on("did-start-navigation", (_e, _url, inPlace, mainFrame) => {
-      if (mainFrame && !inPlace) { tab.annotating = false; tab.domReady = false; broadcast(); }
+      if (mainFrame && !inPlace) {
+        tab.annotating = false;
+        tab.translating = false;
+        tab.isPdf = false;
+        translator.cancel(tab.targetId);
+        tab.domReady = false;
+        broadcast();
+      }
     });
     wc.on("render-process-gone", () => tab.events.gone("the tab crashed"));
     // New windows become tabs the kernel takes over, never windows of their own.
@@ -335,6 +404,7 @@ function close(targetId: string) {
 /** Takes a tab out of every window and closes its page. */
 function discard(tab: Tab) {
   tabs.delete(tab.targetId);
+  translator.dispose(tab.targetId);
   for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.contentView.removeChildView(tab.view);
   const wc = tab.view.webContents;
   if (!wc.isDestroyed()) {
@@ -419,6 +489,13 @@ export function tabCommand(targetId: string, c: BrowserTabCommand) {
       if (!/^https?:/.test(wc.getURL()) || !tab.domReady) return;
       tab.annotating = !tab.annotating;
       syncAnnotations(tab);
+      broadcast();
+      break;
+    case "translate":
+      if (!/^https?:/.test(wc.getURL()) || !tab.domReady) return;
+      tab.translating = !tab.translating;
+      if (!tab.translating) translator.cancel(tab.targetId);
+      if (!tab.isPdf) syncTranslation(tab);
       broadcast();
       break;
     case "back":
@@ -511,6 +588,8 @@ export function currentTabs(): BrowserTab[] {
       canGoBack: t.view.webContents.navigationHistory.canGoBack(),
       canGoForward: t.view.webContents.navigationHistory.canGoForward(),
       annotating: !!t.annotating,
+      translating: !!t.translating,
+      isPdf: !!t.isPdf,
       asksAddress: !!t.asksAddress,
     }));
 }
@@ -519,4 +598,44 @@ export function currentTabs(): BrowserTab[] {
 function broadcast() {
   const list = currentTabs();
   for (const win of BrowserWindow.getAllWindows()) if (win !== parking && !win.isDestroyed()) win.webContents.send("browser-tabs", list);
+}
+
+const MAX_PDF_BYTES = 50 * 1024 * 1024;
+
+/** Fetches a PDF tab's raw bytes using the embedded browser session (cookies & proxy included). */
+export async function fetchTabPdf(targetId: string): Promise<Uint8Array> {
+  const tab = tabs.get(targetId);
+  if (!tab || tab.view.webContents.isDestroyed()) throw new Error("Browser tab is no longer available");
+  const url = tab.view.webContents.getURL();
+  if (!/^https?:/.test(url)) throw new Error("Unsupported PDF URL");
+  const res = await browserSession().fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch PDF (HTTP ${res.status})`);
+  const len = Number(res.headers.get("content-length") ?? 0);
+  if (len > MAX_PDF_BYTES) throw new Error("PDF exceeds 50 MB limit");
+  const buf = new Uint8Array(await res.arrayBuffer());
+  if (buf.byteLength > MAX_PDF_BYTES) throw new Error("PDF exceeds 50 MB limit");
+  return buf;
+}
+
+/** Shared batch translation entry for renderer components (e.g. PdfView & BrowserPdfView). */
+export async function translateScopeBlocks(
+  scopeId: string,
+  title: string,
+  targetLanguage: string,
+  items: TranslationBlock[],
+) {
+  if (items.length === 0) return { translations: {} };
+  try {
+    return await translator.translateBatch(scopeId, targetLanguage || language(), title, items.slice(0, 32));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/cancelled|aborted|disconnected/i.test(message)) {
+      return { translations: {}, cancelled: true };
+    }
+    throw err;
+  }
+}
+
+export function cancelScopeTranslation(scopeId: string) {
+  translator.cancel(scopeId);
 }

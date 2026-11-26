@@ -102,13 +102,12 @@
       "stone": "Grey"
     },
     "newTab": "New",
-    "addTab": "Add someone else's bot",
+    "addTab": "Connect",
     "add": {
-      "title": "Add someone else's bot",
-      "sub": "Paste the link they gave you.",
+      "title": "Connect someone else's bot",
+      "sub": "Paste the link they gave you. What you send it goes to them.",
       "link": "Link",
       "placeholder": "Paste the link they gave you",
-      "hint": "It is a bot of another organization or another person. What you send it goes to them.",
       "read": "Read the card",
       "reading": "Reading the card…",
       "confirm": "Confirm this bot",
@@ -118,10 +117,10 @@
       "notice": "The text and pictures you send leave this Mac and go to {{host}}. It cannot see your other conversations or files, and it cannot operate this computer.",
       "noticeLocal": "The text and pictures you send go to another service on this Mac ({{host}}). It cannot see your other conversations or files, and it cannot operate this computer.",
       "credential": "Key or token",
-      "credentialHint": "Kept in this Mac's keychain",
+      "credentialHint": "Kept in this Mac's keychain.",
       "needsCredential": "This bot needs a credential before it can be added.",
       "back": "Use another link",
-      "add": "Add",
+      "add": "Connect",
       "errors": {
         "unreachable": "No card could be read at this link.",
         "invalid": "This link does not lead to a usable card.",
@@ -129,7 +128,7 @@
         "moved": "The card points at another address ({{host}}); it cannot be added.",
         "changed": "The card changed before you confirmed it; read it again.",
         "off": "This version cannot add someone else's bot yet.",
-        "other": "Adding it did not work; please try again."
+        "other": "Connecting did not work; please try again."
       }
     }
   },
@@ -261,15 +260,35 @@
     "local": "This Mac",
     "skills": "What it can do",
     "credential": "Credential",
-    "credentialHint": "Kept in this Mac's keychain",
+    "credentialHint": "Kept in this Mac's keychain.",
     "credentialSave": "Save",
-    "credentialSaved": "Credential saved",
-    "needsReview": "Their card changed: {{what}}. Messages go out again once you confirm.",
+    "credentialSaved": "Credential updated",
     "review": "I have checked",
     "offeredName": "They now call it “{{name}}”",
     "adoptName": "Use this name",
     "moved": "Their card points at another address; the last one is still in use.",
     "unreachable": "Their card has not been readable for a while; the last one is still in use.",
-    "noImages": "{{name}} cannot take pictures"
+    "noImages": "{{name}} cannot take pictures",
+    "access": "Access",
+    "authKind": "Authentication",
+    "auth": {
+      "none": "None",
+      "api_key": "API key",
+      "bearer": "Bearer token",
+      "basic": "User name and password"
+    },
+    "credentialReplace": "Replace",
+    "reread": "Read the card again",
+    "rereadDone": "Card updated",
+    "rereadHint": "If they move it or change how it signs in, read the card again to follow.",
+    "schemeChanged": "They now ask for {{auth}}. Enter the new credential below before it can be messaged again.",
+    "schemeDropped": "They no longer ask for a credential. Confirm to carry on."
+  },
+  "credential": {
+    "key": "API key",
+    "token": "Token",
+    "username": "User name",
+    "password": "Password",
+    "keep": "Saved — type a new one to replace it"
   }
 }

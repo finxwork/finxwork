@@ -149,7 +149,7 @@ async fn exec_follows_a_skill_from_the_catalog() {
     assert!(!text.contains("Shadowed copy.") && !text.contains("<skill name=\"deploy\""));
     let names: Vec<&str> = logged["skills"].as_array().unwrap().iter().filter_map(|s| s["name"].as_str()).collect();
     // The built-in skill is the user's to invoke, never in the catalog.
-    assert_eq!(names, vec!["lint", "gen-report", "medical-imaging", "skill-creator"]);
+    assert_eq!(names, vec!["lint", "gen-report", "chest-ct", "skill-creator"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -208,7 +208,7 @@ async fn the_skills_command_lists_layers_shadows_and_problems() {
             row("deploy", "project", "disabled"),
             row("broken", "user", "invalid"),
             row("gen-report", "user", "active"),
-            row("medical-imaging", "system", "active"),
+            row("chest-ct", "system", "active"),
             row("skill-creator", "system", "active"),
         ]
     );

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RpcError } from "@finx/client";
-import type { ConfigEdit, ConfigLayer, ConfigReadResult, McpChangedParams, McpCheckResult, McpListResult, McpServerView, SkillsListResult } from "@finx/protocol";
+import type { ConfigEdit, ConfigLayer, ConfigReadResult, McpChangedParams, McpCheckResult, McpListResult, McpServerView, McpUpdateCheckResult, McpUpgradeResult, SkillsListResult } from "@finx/protocol";
 import { i18n } from "../../../shared/i18n";
 import { errorText, useStore, type Store } from "../store";
 import { skillItems, type SkillItem } from "./model";
@@ -29,6 +29,9 @@ export function useCustomize(cwd: string | null) {
   /** Removed here, waiting for the toast's Undo to pass. */
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [checking, setChecking] = useState<Set<string>>(new Set());
+  const [checkingUpdate, setCheckingUpdate] = useState<Set<string>>(new Set());
+  const [upgrading, setUpgrading] = useState<Set<string>>(new Set());
+  const [updates, setUpdates] = useState<Map<string, McpUpdateCheckResult>>(new Map());
   /** Servers waiting for their sign-in in the browser: name → the address to open again. */
   const [signingIn, setSigningIn] = useState<Map<string, string>>(new Map());
   const loginStops = useRef(new Map<string, () => void>());
@@ -150,6 +153,72 @@ export function useCustomize(cwd: string | null) {
         return null;
       } finally {
         setChecking((c) => {
+          const next = new Set(c);
+          next.delete(name);
+          return next;
+        });
+      }
+    },
+    [rpc, params, readServers, st],
+  );
+
+  /** mcp/check_update: queries upstream registry or bundled manifest for a newer version. */
+  const checkUpdate = useCallback(
+    async (name: string): Promise<McpUpdateCheckResult | null> => {
+      if (!rpc) return null;
+      setCheckingUpdate((c) => new Set(c).add(name));
+      try {
+        const r = await rpc.request("mcp/check_update", { name, ...params });
+        setUpdates((m) => new Map(m).set(name, r));
+        await readServers();
+        if (r.status === "up_to_date") {
+          st.show(t("toast.updateUpToDate", { name, version: r.current_version ?? r.latest_version ?? "" }));
+        } else if (r.status === "update_available") {
+          st.show(
+            r.current_version
+              ? t("toast.updateAvailable", { name, current: r.current_version, latest: r.latest_version ?? "" })
+              : t("toast.updateAvailableLatest", { name, latest: r.latest_version ?? "" }),
+          );
+        } else if (r.status === "unknown" && r.latest_version) {
+          st.show(t("toast.updateAvailableLatest", { name, latest: r.latest_version }));
+        } else {
+          st.show(r.detail ?? t("toast.updateUnsupported", { name }));
+        }
+        return r;
+      } catch (e) {
+        st.show(errorText(e), undefined, true);
+        return null;
+      } finally {
+        setCheckingUpdate((c) => {
+          const next = new Set(c);
+          next.delete(name);
+          return next;
+        });
+      }
+    },
+    [rpc, params, readServers, st],
+  );
+
+  /** mcp/upgrade: updates a managed connector or local package connector to the latest version and rechecks it. */
+  const upgrade = useCallback(
+    async (name: string): Promise<McpUpgradeResult | null> => {
+      if (!rpc) return null;
+      setUpgrading((c) => new Set(c).add(name));
+      try {
+        const r = await rpc.request("mcp/upgrade", { name, ...params });
+        setUpdates((m) => {
+          const next = new Map(m);
+          next.delete(name);
+          return next;
+        });
+        await readServers();
+        st.show(t("toast.upgraded", { name, version: r.current_version ?? "" }));
+        return r;
+      } catch (e) {
+        st.show(errorText(e), undefined, true);
+        return null;
+      } finally {
+        setUpgrading((c) => {
           const next = new Set(c);
           next.delete(name);
           return next;
@@ -359,6 +428,9 @@ export function useCustomize(cwd: string | null) {
     failed,
     loaded: skills !== null && mcp !== null && config !== null,
     checking,
+    checkingUpdate,
+    upgrading,
+    updates,
     signingIn,
     adding,
     setAdding,
@@ -368,6 +440,8 @@ export function useCustomize(cwd: string | null) {
     layerInfo,
     write,
     check,
+    checkUpdate,
+    upgrade,
     login,
     logout,
     switchSkill,

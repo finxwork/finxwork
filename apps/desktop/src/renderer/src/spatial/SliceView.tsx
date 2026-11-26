@@ -201,7 +201,7 @@ export function SliceView({
       )}
 
       <div className="slv-stage" onWheel={onWheel}>
-        <div className="slv-frame" style={{ aspectRatio: `${aspect}` }}>
+        <div className="slv-frame" style={{ aspectRatio: `${aspect}`, ["--slv-ar" as string]: `${aspect}` }}>
           <canvas
             ref={canvasRef}
             className="slv-canvas"

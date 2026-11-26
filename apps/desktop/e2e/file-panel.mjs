@@ -578,6 +578,37 @@ try {
     fail(`${e.message}: C1-C3 ${JSON.stringify(await page.run(`[${cellText("C1")}, ${cellText("C2")}, ${cellText("C3")}]`))}, toast ${JSON.stringify(await page.run(`document.querySelector(".toast")?.textContent ?? null`))}`);
   });
   check(await page.run(`!document.querySelector(".dcp-viewer:not([hidden]) .sht-agent")`), "the grid took its own quick edits for the agent's");
+  step("columns multi-select by drag, Shift-click, and ⌘-click; right-click preserves multi-selection for batch delete and resize");
+  const colHead = (label) => `[...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col")].find((el) => el.textContent === ${JSON.stringify(label)})`;
+  const selectedCols = () => page.run(`[...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((el) => el.textContent)`);
+  // Drag across A → C selects A, B, C.
+  await page.run(`(() => { const a = ${colHead("A")}.getBoundingClientRect(), c = ${colHead("C")}.getBoundingClientRect(); ${colHead("A")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: a.x + a.width / 2, clientY: a.y + a.height / 2 })); window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: c.x + c.width / 2, clientY: c.y + c.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("drag-selected columns A..C", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A","B","C"]'`);
+  // ⌘-clicking B toggles B out of A..C, leaving disjoint A and C.
+  await page.run(`(() => { const b = ${colHead("B")}.getBoundingClientRect(); ${colHead("B")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, metaKey: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("⌘-toggled disjoint A and C", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A","C"]' && !!document.querySelector(".dcp-viewer:not([hidden]) .sht-sel.extra")`);
+  // Status bar aggregates across disjoint columns A (2 texts) and C (7, 8, 9 → sum 24, count 5).
+  await page.until("disjoint status figures", `/5/.test(document.querySelector(".dcp-viewer:not([hidden]) .sht-stats")?.textContent ?? "") && /24/.test(document.querySelector(".dcp-viewer:not([hidden]) .sht-stats")?.textContent ?? "")`, 5000);
+  // Shift-clicking B from A selects contiguous A..B; dragging A's grip resizes both selected columns together.
+  await page.run(`(() => { const a = ${colHead("A")}.getBoundingClientRect(); ${colHead("A")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: a.x + a.width / 2, clientY: a.y + a.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("single A before Shift", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A"]'`);
+  await page.run(`(() => { const b = ${colHead("B")}.getBoundingClientRect(); ${colHead("B")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, shiftKey: true, clientX: b.x + b.width / 2, clientY: b.y + b.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("Shift-selected A..B", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A","B"]'`);
+  const csvW = await page.run(`${colHead("A")}.getBoundingClientRect().width`);
+  await page.run(`(() => { const g = document.querySelector(".dcp-viewer:not([hidden]) .sht-grip.col"), r = g.getBoundingClientRect(); g.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: r.x, clientY: r.y + 5 })); window.dispatchEvent(new MouseEvent("mousemove", { clientX: r.x + 30, clientY: r.y + 5 })); window.dispatchEvent(new MouseEvent("mouseup")); })()`);
+  await page.until("both selected columns resized", `Math.abs(${colHead("A")}.getBoundingClientRect().width - ${csvW + 30}) < 1 && Math.abs(${colHead("B")}.getBoundingClientRect().width - ${csvW + 30}) < 1`);
+  // ⌘-select disjoint A and C, right-click C keeps both selected and deletes both columns cleanly.
+  await page.run(`(() => { const a = ${colHead("A")}.getBoundingClientRect(); ${colHead("A")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: a.x + a.width / 2, clientY: a.y + a.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("single A before ⌘-click", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A"]'`);
+  await page.run(`(() => { const c = ${colHead("C")}.getBoundingClientRect(); ${colHead("C")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, metaKey: true, clientX: c.x + c.width / 2, clientY: c.y + c.height / 2 })); window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); })()`);
+  await page.until("disjoint A and C before right-click", `JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A","C"]'`);
+  await page.run(`(() => { const c = ${colHead("C")}.getBoundingClientRect(); ${colHead("C")}.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 2, clientX: c.x + c.width / 2, clientY: c.y + c.height / 2 })); ${colHead("C")}.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: c.x + c.width / 2, clientY: c.y + c.height / 2 })); })()`);
+  await page.until("menu opened preserving disjoint columns", `!!document.querySelector(".sht-menu") && JSON.stringify([...document.querySelectorAll(".dcp-viewer:not([hidden]) .sht-h.col.on")].map((e) => e.textContent)) === '["A","C"]'`);
+  await page.run(`${menuItem((s) => s.sheet.delete)}.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }))`);
+  await page.until("delete submenu with 2 columns", `document.querySelectorAll(".sht-menu").length === 2 && /2/.test(document.querySelectorAll(".sht-menu")[1].querySelectorAll(".mi")[1]?.textContent ?? "")`);
+  await page.run(`document.querySelectorAll(".sht-menu")[1].querySelectorAll(".mi")[1].click()`);
+  await page.until("disjoint A and C deleted leaving B as A", `${cellText("A1")} === "金额" && ${cellText("A2")} === "100" && !${cellText("B1")}`, 10000);
+  check((await selectedCols()).length >= 1, "selection cleared after delete");
   const tabIcon = (name) => `[...document.querySelectorAll(".fpn-tab")].find((x) => x.querySelector(".brp-tab-t")?.textContent === ${JSON.stringify(name)})?.querySelector(".brp-tab-ic svg rect")`;
   check(await page.run(`!!${tabIcon("values.csv")} && !!${tabIcon("model.xlsx")}`), "a workbook tab does not show the grid icon");
   await toPanel(page, "旧表");

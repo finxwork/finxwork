@@ -1258,6 +1258,10 @@ export class MockServer {
       }
       case "models/list":
         return this.withCustoms(demoModels(this.stored, this.selection, this.listedAt)) satisfies R<"models/list">;
+      case "models/complete": {
+        const q = p as P<"models/complete">;
+        return { text: q.prompt, model: q.model ?? "deepseek/deepseek-chat" } satisfies R<"models/complete">;
+      }
       case "models/refresh":
         this.listedAt = new Date().toISOString();
         this.notifyModels();

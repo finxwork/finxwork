@@ -351,6 +351,7 @@
   },
   "browser": {
     "annotate": "添加到对话",
+    "translate": "沉浸式翻译",
     "title": "浏览器",
     "builtIn": "内置浏览器",
     "resize": "调整浏览器面板宽度",
@@ -422,6 +423,21 @@
     "cancel": "关闭",
     "adding": "添加中…",
     "shortcut": "↩ 添加 · ⇧↩ 换行"
+  },
+  "pdfTranslate": {
+    "title": "沉浸式译文",
+    "viewMode": "切换 PDF 翻译视图",
+    "loading": "正在加载 PDF…",
+    "page": "第 {{page}} / {{total}} 页",
+    "scanned": "本页为扫描图片，暂不支持直接文本翻译",
+    "noModel": "请先在设置中配置可用模型后再使用翻译",
+    "failed": "翻译失败，请重试",
+    "retry": "重试",
+    "mode": {
+      "split": "双栏",
+      "translated": "仅译文",
+      "original": "仅原文"
+    }
   },
   "doc": {
     "title": "文档",
@@ -665,7 +681,9 @@
     "fill": "填充",
     "fillDown": "向下填充",
     "fillRight": "向右填充",
-    "trace": "追踪"
+    "trace": "追踪",
+    "multiCopyRefused": "无法复制不对齐的多重选区，请选择同行或同列的区域",
+    "multiNotSupported": "此操作不支持多重选区"
   },
   "yours": {
     "tabs_other": "{{count}} 个标签页",
@@ -987,6 +1005,7 @@
     },
     "locate": "定位",
     "viewSlice": "看原片",
-    "ask": "问一问"
+    "ask": "问一问",
+    "resizeSide": "调整影像面板宽度"
   }
 }

@@ -29,6 +29,9 @@
       "$ref": "#/definitions/BotCreateParams"
     },
     {
+      "$ref": "#/definitions/BotCredentialParams"
+    },
+    {
       "$ref": "#/definitions/BotIdParams"
     },
     {
@@ -479,10 +482,22 @@
       "$ref": "#/definitions/McpToolsResult"
     },
     {
+      "$ref": "#/definitions/McpUpdateCheckResult"
+    },
+    {
+      "$ref": "#/definitions/McpUpgradeResult"
+    },
+    {
       "$ref": "#/definitions/ModelsCatalogParams"
     },
     {
       "$ref": "#/definitions/ModelsCatalogResult"
+    },
+    {
+      "$ref": "#/definitions/ModelsCompleteParams"
+    },
+    {
+      "$ref": "#/definitions/ModelsCompleteResult"
     },
     {
       "$ref": "#/definitions/ModelsConfigureParams"
@@ -1812,9 +1827,13 @@
           "type": "string"
         },
         "credential": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotCredential"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "url": {
@@ -1829,12 +1848,23 @@
     },
     "BotAuth": {
       "description": "How an external bot takes a credential.",
-      "enum": [
-        "none",
-        "api_key",
-        "bearer"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "none",
+            "api_key",
+            "bearer"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "HTTP Basic: a user name and a password.",
+          "enum": [
+            "basic"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "BotAvatarResult": {
       "properties": {
@@ -1879,6 +1909,67 @@
       "required": [
         "avatar",
         "name"
+      ],
+      "type": "object"
+    },
+    "BotCredential": {
+      "description": "A credential for an external bot, shaped by its card's scheme: one secret for an API key or a bearer token, a user name and a password for HTTP Basic. It goes to the keychain only.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "secret"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "basic"
+              ],
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "username": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "password",
+            "username"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BotCredentialParams": {
+      "description": "Parameters of `bots/credential`: a new credential for an external bot, in the shape its card asks for now. It also settles a credential scheme change waiting for the owner (§5.6).",
+      "properties": {
+        "bot_id": {
+          "type": "string"
+        },
+        "credential": {
+          "$ref": "#/definitions/BotCredential"
+        }
+      },
+      "required": [
+        "bot_id",
+        "credential"
       ],
       "type": "object"
     },
@@ -4336,6 +4427,13 @@
     "ConnectionModel": {
       "description": "Public connection management DTOs. Never contain credentials or session tokens.",
       "properties": {
+        "api": {
+          "description": "Wire API when it differs from the connection's default (e.g. `anthropic-messages`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "context_window": {
           "format": "uint32",
           "minimum": 0.0,
@@ -14196,6 +14294,13 @@
         "name": {
           "type": "string"
         },
+        "server_version": {
+          "description": "The server's reported or installed version, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "status": {
           "$ref": "#/definitions/McpServerStatusView"
         },
@@ -14205,6 +14310,10 @@
         },
         "transport": {
           "$ref": "#/definitions/McpTransportKind"
+        },
+        "update_supported": {
+          "description": "Whether checking for updates is supported for this connector.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -14343,6 +14452,95 @@
           "type": "string"
         }
       ]
+    },
+    "McpUpdateCheckResult": {
+      "properties": {
+        "can_upgrade": {
+          "default": false,
+          "description": "Whether one-click upgrade (`mcp/upgrade`) can be performed for this update.",
+          "type": "boolean"
+        },
+        "current_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "latest_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "package": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "release_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/McpUpdateStatus"
+        }
+      },
+      "required": [
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "McpUpdateStatus": {
+      "enum": [
+        "up_to_date",
+        "update_available",
+        "unsupported",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "McpUpgradeResult": {
+      "properties": {
+        "current_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "previous_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "$ref": "#/definitions/McpServerView"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/definitions/McpToolSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "server",
+        "tools"
+      ],
+      "type": "object"
     },
     "MeshSource": {
       "enum": [
@@ -14704,6 +14902,56 @@
       },
       "required": [
         "models"
+      ],
+      "type": "object"
+    },
+    "ModelsCompleteParams": {
+      "description": "Parameters of `models/complete`: a stateless single-turn text completion with no session.",
+      "properties": {
+        "max_tokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "model": {
+          "description": "`provider/model-id`; omitted uses the current default model.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "ModelsCompleteResult": {
+      "description": "Result of `models/complete`.",
+      "properties": {
+        "model": {
+          "description": "`provider/model-id` that answered.",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "text"
       ],
       "type": "object"
     },
@@ -21899,6 +22147,10 @@
       "params": "BotCreateParams",
       "result": "BotResult"
     },
+    "bots/credential": {
+      "params": "BotCredentialParams",
+      "result": "BotResult"
+    },
     "bots/delete": {
       "params": "BotIdParams",
       "result": "Empty"
@@ -21914,6 +22166,10 @@
     "bots/read": {
       "params": "BotIdParams",
       "result": "Empty"
+    },
+    "bots/reread": {
+      "params": "BotIdParams",
+      "result": "BotResult"
     },
     "bots/routine": {
       "params": "BotRoutineParams",
@@ -22262,6 +22518,10 @@
       "params": "McpServerParams",
       "result": "McpCheckResult"
     },
+    "mcp/check_update": {
+      "params": "McpServerParams",
+      "result": "McpUpdateCheckResult"
+    },
     "mcp/list": {
       "params": "McpListParams",
       "result": "McpListResult"
@@ -22290,9 +22550,17 @@
       "params": "McpServerParams",
       "result": "McpToolsResult"
     },
+    "mcp/upgrade": {
+      "params": "McpServerParams",
+      "result": "McpUpgradeResult"
+    },
     "models/catalog": {
       "params": "ModelsCatalogParams",
       "result": "ModelsCatalogResult"
+    },
+    "models/complete": {
+      "params": "ModelsCompleteParams",
+      "result": "ModelsCompleteResult"
     },
     "models/configure": {
       "params": "ModelsConfigureParams",
@@ -22480,10 +22748,12 @@
       "bots/avatar": "experimental",
       "bots/clear": "experimental",
       "bots/create": "experimental",
+      "bots/credential": "experimental",
       "bots/delete": "experimental",
       "bots/open": "experimental",
       "bots/preview": "experimental",
       "bots/read": "experimental",
+      "bots/reread": "experimental",
       "bots/routine": "experimental",
       "bots/routine_delete": "experimental",
       "bots/routine_run": "experimental",
@@ -22573,6 +22843,7 @@
       "files/write": "stable",
       "initialize": "stable",
       "mcp/check": "stable",
+      "mcp/check_update": "stable",
       "mcp/list": "stable",
       "mcp/login": "stable",
       "mcp/login_cancel": "stable",
@@ -22580,7 +22851,9 @@
       "mcp/probe": "stable",
       "mcp/probe_cancel": "stable",
       "mcp/tools": "stable",
+      "mcp/upgrade": "stable",
       "models/catalog": "experimental",
+      "models/complete": "stable",
       "models/configure": "experimental",
       "models/list": "stable",
       "models/refresh": "stable",

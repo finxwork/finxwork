@@ -62,6 +62,14 @@ pub(crate) fn thinking_format(adapter: &str) -> Option<finx_llm::model::Thinking
     }
 }
 
+/// QwenWork's gateway authenticates every protocol (including `anthropic/messages`) with Bearer.
+pub(crate) fn auth_header(adapter: &str) -> Option<finx_llm::model::AuthHeader> {
+    match adapter {
+        "qwenwork" => Some(finx_llm::model::AuthHeader::Bearer),
+        _ => None,
+    }
+}
+
 pub(crate) fn supported(adapter: &str, model: &str) -> bool {
     adapter != "qoder" || crate::qoder::supports_model(model)
 }

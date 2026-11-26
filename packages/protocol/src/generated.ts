@@ -248,12 +248,12 @@ export type BotAccept = "text" | "image";
 /** Parameters of `bots/add`: the link, the card the owner saw, and a credential when the card wants one. */
 export type BotAddParams = {
   card_sha256: string;
-  credential?: string | null;
+  credential?: BotCredential | null;
   url: string;
 };
 
 /** How an external bot takes a credential. */
-export type BotAuth = "none" | "api_key" | "bearer";
+export type BotAuth = "none" | "api_key" | "bearer" | "basic";
 
 export type BotAvatarResult = {
   /** `data:image/png;base64,…` */
@@ -268,6 +268,22 @@ export type BotCreateParams = {
   name: string;
   /** How hard its conversation starts out thinking; the configured level without it. */
   thinking?: ThinkingLevel | null;
+};
+
+/** A credential for an external bot, shaped by its card's scheme: one secret for an API key or a bearer token, a user name and a password for HTTP Basic. It goes to the keychain only. */
+export type BotCredential = {
+  kind: "secret";
+  value: string;
+} | {
+  kind: "basic";
+  password: string;
+  username: string;
+};
+
+/** Parameters of `bots/credential`: a new credential for an external bot, in the shape its card asks for now. It also settles a credential scheme change waiting for the owner (§5.6). */
+export type BotCredentialParams = {
+  bot_id: string;
+  credential: BotCredential;
 };
 
 /** Parameters of `bots/avatar`, `bots/read`, `bots/unread`, `bots/clear` and `bots/delete`. */
@@ -893,6 +909,8 @@ export type ConnectionIdParams = {
 
 /** Public connection management DTOs. Never contain credentials or session tokens. */
 export type ConnectionModel = {
+  /** Wire API when it differs from the connection's default (e.g. `anthropic-messages`). */
+  api?: string | null;
   context_window?: number | null;
   /** The level the application itself uses when none is chosen. */
   default_thinking: ThinkingLevel;
@@ -3190,10 +3208,14 @@ export type McpServerView = {
   /** The layer that defines the server (its command or URL). */
   layer: ConfigLayer;
   name: string;
+  /** The server's reported or installed version, when known. */
+  server_version?: string | null;
   status: McpServerStatusView;
   /** The command line, or the URL without its query. */
   summary: string;
   transport: McpTransportKind;
+  /** Whether checking for updates is supported for this connector. */
+  update_supported?: boolean;
 };
 
 export type McpStatusSource = "session" | "cache";
@@ -3217,6 +3239,27 @@ export type McpToolsResult = {
 export type McpToolsSource = "session" | "cache" | "none";
 
 export type McpTransportKind = "stdio" | "http" | "sse";
+
+export type McpUpdateCheckResult = {
+  /** Whether one-click upgrade (`mcp/upgrade`) can be performed for this update. */
+  can_upgrade: boolean;
+  current_version?: string | null;
+  detail?: string | null;
+  latest_version?: string | null;
+  name: string;
+  package?: string | null;
+  release_url?: string | null;
+  status: McpUpdateStatus;
+};
+
+export type McpUpdateStatus = "up_to_date" | "update_available" | "unsupported" | "unknown";
+
+export type McpUpgradeResult = {
+  current_version?: string | null;
+  previous_version?: string | null;
+  server: McpServerView;
+  tools: McpToolSummary[];
+};
 
 export type MeshSource = "file" | "structure";
 
@@ -3305,6 +3348,22 @@ export type ModelsCatalogParams = {
 
 export type ModelsCatalogResult = {
   models: CatalogModel[];
+};
+
+/** Parameters of `models/complete`: a stateless single-turn text completion with no session. */
+export type ModelsCompleteParams = {
+  max_tokens?: number | null;
+  /** `provider/model-id`; omitted uses the current default model. */
+  model?: string | null;
+  prompt: string;
+  system?: string | null;
+};
+
+/** Result of `models/complete`. */
+export type ModelsCompleteResult = {
+  /** `provider/model-id` that answered. */
+  model: string;
+  text: string;
 };
 
 /** `models/configure`: what a model is like, for one nothing describes (§7.3). A field left out stays as it is; `null` removes it. With `clear`, the model's entry goes and it is found by its name again. */
@@ -5048,10 +5107,12 @@ export interface Methods {
   "bots/avatar": [BotIdParams, BotAvatarResult];
   "bots/clear": [BotIdParams, Empty];
   "bots/create": [BotCreateParams, BotResult];
+  "bots/credential": [BotCredentialParams, BotResult];
   "bots/delete": [BotIdParams, Empty];
   "bots/open": [BotOpenParams, SessionNewResult];
   "bots/preview": [BotPreviewParams, RemotePreview];
   "bots/read": [BotIdParams, Empty];
+  "bots/reread": [BotIdParams, BotResult];
   "bots/routine": [BotRoutineParams, BotRoutineResult];
   "bots/routine_delete": [BotRoutineParams, Empty];
   "bots/routine_run": [BotRoutineRunParams, BotRoutineRunResult];
@@ -5141,6 +5202,7 @@ export interface Methods {
   "files/write": [FilesWriteParams, FilesWriteResult];
   "initialize": [InitializeParams, InitializeResult];
   "mcp/check": [McpServerParams, McpCheckResult];
+  "mcp/check_update": [McpServerParams, McpUpdateCheckResult];
   "mcp/list": [McpListParams, McpListResult];
   "mcp/login": [McpLoginParams, McpLoginResult];
   "mcp/login_cancel": [McpLogoutParams, Empty];
@@ -5148,7 +5210,9 @@ export interface Methods {
   "mcp/probe": [McpProbeParams, McpProbeResult];
   "mcp/probe_cancel": [McpProbeCancelParams, Empty];
   "mcp/tools": [McpServerParams, McpToolsResult];
+  "mcp/upgrade": [McpServerParams, McpUpgradeResult];
   "models/catalog": [ModelsCatalogParams, ModelsCatalogResult];
+  "models/complete": [ModelsCompleteParams, ModelsCompleteResult];
   "models/configure": [ModelsConfigureParams, ModelsConfigureResult];
   "models/list": [Record<string, never>, ModelsListResult];
   "models/refresh": [ModelsRefreshParams, ModelsRefreshResult];

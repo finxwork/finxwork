@@ -37,6 +37,8 @@ pub struct CacheEntry {
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
     #[serde(default)]
     pub tools: Vec<McpToolSummary>,
 }
@@ -105,6 +107,7 @@ pub struct Outcome<'a> {
     pub error: Option<String>,
     pub elapsed_ms: Option<u64>,
     pub instructions: Option<String>,
+    pub server_version: Option<String>,
     pub tools: Vec<(&'a str, Option<&'a str>, Option<&'a str>)>,
 }
 
@@ -130,6 +133,7 @@ pub fn write(dir: &Path, config: &McpServerConfig, workspace: &Path, outcome: Ou
         checked_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         elapsed_ms: outcome.elapsed_ms,
         instructions: outcome.instructions.map(|i| super::cap(&i, 4096)),
+        server_version: outcome.server_version.filter(|v| !v.trim().is_empty()),
         tools: outcome
             .tools
             .into_iter()
@@ -186,6 +190,7 @@ mod tests {
             error: None,
             elapsed_ms: Some(12),
             instructions: None,
+            server_version: Some("1.0.0".into()),
             tools: vec![("query", Some("Query"), Some("Runs a read-only query.\nMore."))],
         };
         write(dir.path(), &config, Path::new("/work/a"), outcome, false).unwrap();

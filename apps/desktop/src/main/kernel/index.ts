@@ -1,4 +1,6 @@
+import { RpcClient } from "@finx/client";
 import { MockServer, parseStress } from "@finx/client/mock";
+import { PROTOCOL_VERSION, type ModelsCompleteParams, type ModelsCompleteResult } from "@finx/protocol";
 import { app, BrowserWindow, MessageChannelMain, type WebContents } from "electron";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -11,7 +13,7 @@ import { LineCutter } from "../frames";
 import { platform } from "../platform";
 import { startBrowserHost } from "../browser/host";
 import { startDocxHost } from "../docx/host";
-import { Supervisor, type KernelStatus, type ListFollower } from "./supervisor";
+import { socketTransport, Supervisor, type KernelStatus, type ListFollower } from "./supervisor";
 
 // The windows' connections to finx (desktop-design §3.2, desktop-kernel-
 // integration §3): each window gets a MessagePort whose other end is here,
@@ -176,5 +178,53 @@ export function connectKernel(wc: WebContents) {
       connections.get(wc)?.close();
       connections.delete(wc);
     });
+  }
+}
+
+/**
+ * Runs a single stateless `models/complete` call against the active kernel.
+ * Aborting `signal` tears down the local socket immediately so the server cancels the in-flight stream.
+ */
+export async function completeWithKernel(params: ModelsCompleteParams, signal?: AbortSignal): Promise<ModelsCompleteResult> {
+  if (signal?.aborted) throw new Error("Aborted");
+  if (kernelKind === "mock") {
+    mock ??= new MockServer({ stress: parseStress(process.env.FINXWORK_MOCK_STRESS) });
+    let onText: ((t: string) => void) | undefined;
+    let onClose: (() => void) | undefined;
+    const conn = mock.connect({ write: (t) => onText?.(t) });
+    const rpc = new RpcClient({
+      send: (t) => conn.receive(t),
+      onText: (cb) => { onText = cb; return () => { onText = undefined; }; },
+      onClose: (cb) => { onClose = cb; return () => { onClose = undefined; }; },
+    });
+    const abort = () => { conn.close(); onClose?.(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await rpc.request("initialize", { protocol_version: PROTOCOL_VERSION, client_info: { name: "finxwork-translate", version: app.getVersion() } });
+      return await rpc.request("models/complete", params);
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      conn.close();
+    }
+  }
+  if (!supervisor) throw new Error("Kernel is not running");
+  await supervisor.ready();
+  if (signal?.aborted) throw new Error("Aborted");
+  const socket = net.createConnection(supervisor.current.endpoint);
+  socket.unref();
+  const abort = () => socket.destroy();
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve);
+      socket.once("error", reject);
+      socket.once("close", () => reject(new Error("Aborted")));
+    });
+    const rpc = new RpcClient(socketTransport(socket));
+    await rpc.request("initialize", { protocol_version: PROTOCOL_VERSION, client_info: { name: "finxwork-translate", version: app.getVersion() } });
+    return await rpc.request("models/complete", params);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    socket.destroy();
   }
 }

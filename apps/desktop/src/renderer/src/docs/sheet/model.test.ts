@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { editTextOf, inputOp, isHardcoded, lensAt, lensText, parseTsv, pasteOps, readable, selectionStats, sizeKey, sizesOf, statText, toMarkdown, toTsv, withLens, type Lens } from "./model.ts";
+import { areaCellCount, colSelected, copyGrid, editTextOf, expandSpans, inAreas, inSpans, inputOp, isDisjoint, isHardcoded, lensAt, lensText, mergeSpans, parseTsv, pasteOps, rangesText, readable, rowSelected, selectedAreas, selectionStats, sizeKey, sizesOf, spanCount, statText, toggleLine, toMarkdown, toMarkdownGrid, toTsv, toTsvGrid, wholeCols, wholeRows, withLens, type Lens, type Sel } from "./model.ts";
 
 test("what is typed reads as Excel reads it", () => {
   const v = (raw: string) => inputOp("S", "A1", raw);
@@ -112,4 +112,112 @@ test("a number typed among formulas is marked", () => {
   assert.equal(isHardcoded(at, 1, 2), true);
   assert.equal(isHardcoded(at, 1, 1), false);
   assert.equal(isHardcoded(at, 2, 2), false);
+});
+
+test("multi-area selection helpers merge spans, identify whole lines, and count unique cells", () => {
+  const sel: Sel = {
+    extra: [{ r1: 1, c1: 1, r2: 10, c2: 1 }, { r1: 1, c1: 3, r2: 10, c2: 4 }],
+    anchor: { r: 1, c: 4 },
+    focus: { r: 10, c: 5 },
+  };
+  const areas = selectedAreas(sel);
+  assert.equal(isDisjoint(sel), true);
+  assert.equal(rangesText(areas), "A1:A10,C1:D10,D1:E10");
+  assert.equal(colSelected(areas, 1), true);
+  assert.equal(colSelected(areas, 2), false);
+  assert.equal(colSelected(areas, 5), true);
+  assert.equal(rowSelected(areas, 5), true);
+  assert.equal(inAreas(areas, 3, 2), false);
+  assert.equal(inAreas(areas, 3, 4), true);
+
+  const cols = mergeSpans(areas, "cols");
+  assert.deepEqual(cols, [[1, 1], [3, 5]]);
+  assert.equal(spanCount(cols), 4);
+  assert.deepEqual(expandSpans(cols), [1, 3, 4, 5]);
+  assert.equal(inSpans(cols, 4), true);
+  assert.equal(inSpans(cols, 2), false);
+
+  assert.deepEqual(wholeCols(areas, 10), [[1, 1], [3, 5]]);
+  assert.deepEqual(wholeCols(areas, 12), []);
+  assert.deepEqual(wholeRows([{ r1: 2, c1: 1, r2: 2, c2: 4 }, { r1: 5, c1: 1, r2: 6, c2: 4 }], 4), [[2, 2], [5, 6]]);
+
+  // Overlapping column D is counted once: 4 unique columns × 10 rows = 40.
+  assert.equal(areaCellCount(areas), 40);
+  // Two disjoint single cells count as 2.
+  assert.equal(areaCellCount([{ r1: 1, c1: 1, r2: 1, c2: 1 }, { r1: 1, c1: 3, r2: 1, c2: 3 }]), 2);
+});
+
+test("⌘/Ctrl toggling removes a selected column or row and splits contiguous ranges without ever emptying", () => {
+  // Single column cannot be toggled off.
+  const one: Sel = { anchor: { r: 1, c: 1 }, focus: { r: 10, c: 1 } };
+  assert.deepEqual(toggleLine(one, "cols", 1, 10), one);
+
+  // Removing the middle of A..C splits into A and C.
+  const three: Sel = { anchor: { r: 1, c: 1 }, focus: { r: 10, c: 3 } };
+  const split = toggleLine(three, "cols", 2, 10);
+  assert.deepEqual(selectedAreas(split), [
+    { r1: 1, c1: 1, r2: 10, c2: 1 },
+    { r1: 1, c1: 3, r2: 10, c2: 3 },
+  ]);
+
+  // Removing C leaves only A (no extra).
+  const back = toggleLine(split, "cols", 3, 10);
+  assert.equal(isDisjoint(back), false);
+  assert.deepEqual(selectedAreas(back), [{ r1: 1, c1: 1, r2: 10, c2: 1 }]);
+
+  // Symmetric row toggling.
+  const rows: Sel = { extra: [{ r1: 2, c1: 1, r2: 2, c2: 5 }], anchor: { r: 4, c: 1 }, focus: { r: 5, c: 5 } };
+  assert.deepEqual(selectedAreas(toggleLine(rows, "rows", 4, 5)), [
+    { r1: 2, c1: 1, r2: 2, c2: 5 },
+    { r1: 5, c1: 1, r2: 5, c2: 5 },
+  ]);
+});
+
+test("multi-area copy follows Excel's R × C alignment rule and deduplicates overlapping areas", () => {
+  const cells = new Map([
+    ["A1", "t"], ["B1", "skip"], ["C1", "api"],
+    ["A2", "00:00"], ["B2", "9"], ["C2", "0"],
+    ["A3", "01:00"], ["B3", "8"], ["C3", "1"],
+  ]);
+  // Disjoint whole columns A and C align on rows 1..3.
+  const colGrid = copyGrid([{ r1: 1, c1: 3, r2: 3, c2: 3 }, { r1: 1, c1: 1, r2: 3, c2: 1 }]);
+  assert.deepEqual(colGrid, { rowSpans: [[1, 3]], colSpans: [[1, 1], [3, 3]] });
+  assert.equal(toTsvGrid(colGrid!.rowSpans, colGrid!.colSpans, (c) => cells.get(c)), "t\tapi\n00:00\t0\n01:00\t1");
+  assert.equal(
+    toMarkdownGrid(colGrid!.rowSpans, colGrid!.colSpans, (c) => cells.get(c)),
+    "| | A | C |\n|---|---|---|\n| 1 | t | api |\n| 2 | 00:00 | 0 |\n| 3 | 01:00 | 1 |",
+  );
+
+  // Disjoint rows 1 and 3 align on columns A..C.
+  const rowGrid = copyGrid([{ r1: 1, c1: 1, r2: 1, c2: 3 }, { r1: 3, c1: 1, r2: 3, c2: 3 }]);
+  assert.deepEqual(rowGrid, { rowSpans: [[1, 1], [3, 3]], colSpans: [[1, 3]] });
+
+  // Symmetric four-corner grid (A1, C1, A3, C3) aligns.
+  const corners = copyGrid([
+    { r1: 1, c1: 1, r2: 1, c2: 1 },
+    { r1: 1, c1: 3, r2: 1, c2: 3 },
+    { r1: 3, c1: 1, r2: 3, c2: 1 },
+    { r1: 3, c1: 3, r2: 3, c2: 3 },
+  ]);
+  assert.deepEqual(corners, { rowSpans: [[1, 1], [3, 3]], colSpans: [[1, 1], [3, 3]] });
+
+  // Misaligned areas (A1:A2 and C2:C3) are refused, as in Excel.
+  assert.equal(copyGrid([{ r1: 1, c1: 1, r2: 2, c2: 1 }, { r1: 2, c1: 3, r2: 3, c2: 3 }]), null);
+});
+
+test("status bar figures aggregate across disjoint areas and deduplicate overlaps", () => {
+  const n = (cell: string, value: number) => ({ cell, text: String(value), value: { type: "number", value } }) as never;
+  const areas = [{ r1: 1, c1: 1, r2: 2, c2: 1 }, { r1: 1, c1: 3, r2: 2, c2: 3 }];
+  assert.deepEqual(selectionStats([n("A1", 10), n("C1", 20), n("C1", 20), n("C2", 30)], areas), {
+    count: 3,
+    numbers: 3,
+    sum: 60,
+    average: 20,
+    error: false,
+  });
+  // Two disjoint single cells produce figures (unlike one single cell).
+  assert.deepEqual(
+    selectionStats([n("A1", 4), n("C1", 6)], [{ r1: 1, c1: 1, r2: 1, c2: 1 }, { r1: 1, c1: 3, r2: 1, c2: 3 }]),
+    { count: 2, numbers: 2, sum: 10, average: 5, error: false },
+  );
 });

@@ -5,6 +5,7 @@ import type { AlertTarget } from "@finx/client";
 import type { Language, LanguageChoice } from "./i18n";
 import type { UpdateInfo } from "./update";
 import type { BrowserComment } from "./annotations";
+import type { TranslationBatchResult, TranslationBlock } from "./translation";
 import type { SearchEngine } from "./search";
 
 // What the preload script gives the page (window.finx). Everything about
@@ -120,6 +121,9 @@ export type BrowserTab = {
   canGoBack: boolean;
   canGoForward: boolean;
   annotating?: boolean;
+  translating?: boolean;
+  /** The tab's main document is a PDF (`application/pdf`). */
+  isPdf?: boolean;
   /** A blank tab the person opened: the panel's address field waits for them. The agent's blank tabs do not take the keyboard. */
   asksAddress?: boolean;
 };
@@ -140,7 +144,7 @@ export type DevServer = { port: number; url: string; title: string; framework?: 
 
 /** What the person does to a tab in the panel. "new" opens a tab beside it, for its session. */
 export type BrowserTabCommand =
-  | { command: "back" | "forward" | "reload" | "stop" | "close" | "new" | "annotate" }
+  | { command: "back" | "forward" | "reload" | "stop" | "close" | "new" | "annotate" | "translate" }
   /** `engine`: the person picked a search engine by its keyword, so this is a search with it. */
   | { command: "go"; url: string; engine?: string };
 
@@ -220,6 +224,15 @@ export type Bridge = {
   showBrowserTab(targetId: string): void;
   onBrowserStill(cb: (still: BrowserStill) => void): () => void;
   browserTabCommand(targetId: string, command: BrowserTabCommand): void;
+  /** Fetches the bytes of an embedded browser PDF tab using its session (cookies & proxy). */
+  fetchBrowserPdf(targetId: string): Promise<Uint8Array>;
+  /** Translates a batch of text blocks through the active kernel with LRU caching & concurrency control. */
+  translateBlocks(
+    scopeId: string,
+    req: { title: string; targetLanguage: string; items: TranslationBlock[] },
+  ): Promise<TranslationBatchResult>;
+  /** Cancels in-flight and queued translations for a scope (e.g. a PDF document or browser tab). */
+  cancelTranslation(scopeId: string): void;
   /** The panel's ⋯ menu: what it shows for a tab, and doing what the person picked there. */
   browserMenuState(targetId: string | null): Promise<BrowserMenuState>;
   browserMenuAction(targetId: string | null, action: BrowserMenuAction): void;

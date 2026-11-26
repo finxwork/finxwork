@@ -245,7 +245,7 @@ export function FinxProvider({ children }: { children: ReactNode }) {
       contextOpen: s.contextOpen ?? true,
       background: false,
       agent: null,
-      browser: true,
+      browser: false,
       browserMax: false,
       files: false,
       filesMax: false,

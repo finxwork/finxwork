@@ -3,13 +3,24 @@
 //! (docs/kernel/model-catalog-design.md §3, §5, §6, §8).
 
 use crate::server::Server;
+use finx_llm::AssistantContent;
 use finx_llm::AuthConfig;
 use finx_llm::AuthStatus;
+use finx_llm::Context;
 use finx_llm::ErrorKind;
+use finx_llm::Message;
+use finx_llm::MessageAccumulator;
 use finx_llm::ProviderConfig;
+use finx_llm::RequestOptions;
+use finx_llm::StreamEvent;
+use finx_llm::ThinkingLevel;
+use finx_llm::ToolChoice;
+use finx_llm::UserMessage;
 use finx_llm::discovery::ListSource;
 use finx_llm::discovery::ModelList;
 use finx_protocol::api::AuthSetResult;
+use finx_protocol::api::ModelsCompleteParams;
+use finx_protocol::api::ModelsCompleteResult;
 use finx_protocol::api::ModelsListResult;
 use finx_protocol::api::ModelsRefreshParams;
 use finx_protocol::api::ModelsRefreshResult;
@@ -83,6 +94,62 @@ fn age_over(time: Option<&str>, secs: i64) -> bool {
 }
 
 impl Server {
+    /// Stateless single-turn text completion using the requested or default model.
+    /// Dropping the returned future (e.g. via `$/cancel_request`) aborts the in-flight stream.
+    pub async fn complete_model(&self, params: ModelsCompleteParams) -> Result<ModelsCompleteResult, RpcError> {
+        let _ = self.0.connections.chatgpt.sync();
+        let reference = self.session_model(params.model, self.0.defaults.model.clone()).await?;
+        let resolved = self
+            .0
+            .llm
+            .resolve(&reference)
+            .map_err(|e| crate::errors::from_kernel(finx_core::KernelError::Model(e), ""))?;
+        let model = resolved.model;
+        let ctx = Context {
+            system: params.system.unwrap_or_default(),
+            messages: vec![Message::from(UserMessage::text(params.prompt))],
+            tools: Vec::new(),
+        };
+        let options = RequestOptions {
+            thinking: ThinkingLevel::Off,
+            max_output_tokens: params.max_tokens,
+            temperature: Some(0.1),
+            tool_choice: ToolChoice::None,
+            cache_key: None,
+            extra_body: serde_json::Map::new(),
+        };
+        let mut stream = self.0.llm.stream(model.clone(), ctx, options);
+        let mut acc = MessageAccumulator::for_model(&model);
+        let message = loop {
+            match stream.next().await {
+                None => return Err(RpcError::internal("the model stream ended unexpectedly")),
+                Some(StreamEvent::Done(msg)) | Some(StreamEvent::Failed(msg)) => break msg,
+                Some(StreamEvent::Retrying { .. }) => {
+                    acc = MessageAccumulator::for_model(&model);
+                }
+                Some(event) => acc.apply(&event),
+            }
+        };
+        if let Some(err) = message.error {
+            let kind = format!("{:?}", err.kind).to_lowercase();
+            let code = match err.kind {
+                ErrorKind::Auth => error_code::NO_MODEL,
+                _ => error_code::TASK_FAILED,
+            };
+            return Err(RpcError::with_kind(code, &kind, err.message));
+        }
+        let mut text = String::new();
+        for block in &message.content {
+            if let AssistantContent::Text { text: chunk } = block {
+                text.push_str(chunk);
+            }
+        }
+        Ok(ModelsCompleteResult {
+            text,
+            model: model.reference(),
+        })
+    }
+
     /// Models, providers with where their keys and models come from, and the defaults of new
     /// sessions. May read saved keys (the keychain), so it blocks.
     pub fn list_models(&self) -> ModelsListResult {

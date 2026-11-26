@@ -108,6 +108,7 @@ pub(super) fn model(m: &Value) -> Option<ConnectionModel> {
         id: id.into(),
         name: m["display_name"].as_str().unwrap_or(id).into(),
         names: Default::default(),
+        api: None,
         context_window,
         max_output_tokens: Some(positive(&m["max_output_tokens"]).unwrap_or(32_000)),
         // Kimi's legacy flag is false even though its thinking_config declares levels.

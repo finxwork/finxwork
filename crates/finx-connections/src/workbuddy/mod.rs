@@ -259,6 +259,7 @@ fn catalog(config: &Value) -> Result<Vec<ConnectionModel>> {
             id: id.into(),
             name: m["name"].as_str().unwrap_or(id).into(),
             names: BTreeMap::new(),
+            api: None,
             context_window: limit("maxInputTokens"),
             max_output_tokens: limit("maxOutputTokens"),
             reasoning: m["supportsReasoning"] == true,

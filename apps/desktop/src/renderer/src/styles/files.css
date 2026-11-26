@@ -31,6 +31,10 @@
 
 /* Wider than the browser's at first: the tree and the code share it. A width the person dragged to wins. */
 .bgp.brp.fpn:not(.sized):not(.max){width:clamp(420px,56%,960px)}
+/* Beside the browser, both panels share the width equally by default, and the browser sits under the window buttons. */
+.spage.dual>.bgp.brp.fpn:not(.sized):not(.max){width:clamp(320px,38%,640px)}
+.spage.dual>.bgp.brp.fpn.bare:not(.sized):not(.max){width:240px;min-width:200px}
+.spage.dual>.fpn .brp-strip{padding-right:8px}
 /* Tabs as wide as their names (to a point); the strip scrolls when they do not fit. The tabs take the
    strip's room, so Expand and the Files button keep to the window's right end. */
 .fpn .brp-tabs{flex:1}
@@ -158,12 +162,13 @@
 .sht-h{position:absolute;box-sizing:border-box;display:grid;place-items:center;background:var(--win2);color:var(--l3);font-size:11px;border-right:.5px solid var(--sep);border-bottom:.5px solid var(--sep);cursor:default}
 .sht-h.on{color:var(--l1);background:color-mix(in srgb,var(--accent) 14%,var(--win2))}
 .sht-corner{position:absolute;z-index:13;background:var(--win2);border-right:.5px solid var(--sep);border-bottom:.5px solid var(--sep);cursor:default}
-.sht-sel{position:absolute;pointer-events:none;border:1px solid var(--accent);box-sizing:border-box}
+.sht-sel{position:absolute;z-index:4;pointer-events:none;border:1px solid var(--accent);box-sizing:border-box}
+.sht-sel.extra{background:color-mix(in srgb,var(--accent) 10%,transparent);border-width:1.5px}
 .sht-sel.multi{background:none;border-width:2px}
 .sht-sel.multi::before{content:"";position:absolute;inset:-2px;background:color-mix(in srgb,var(--accent) 10%,transparent);clip-path:var(--sht-hole)}
-.sht-active{position:absolute;pointer-events:none;border:2px solid var(--accent);box-sizing:border-box}
+.sht-active{position:absolute;z-index:4;pointer-events:none;border:2px solid var(--accent);box-sizing:border-box}
 .sht-fill-handle{position:absolute;z-index:9;width:7px;height:7px;background:var(--accent);border:1px solid var(--sht-bg,var(--win));box-sizing:border-box;cursor:crosshair}
-.sht-fill-to{position:absolute;pointer-events:none;border:1px dashed var(--accent);box-sizing:border-box}
+.sht-fill-to{position:absolute;z-index:4;pointer-events:none;border:1px dashed var(--accent);box-sizing:border-box}
 .sht-fill-tip{position:absolute;z-index:16;padding:2px 6px;border:1px solid var(--sep);border-radius:var(--r-xs);background:var(--win);box-shadow:var(--shadow);color:var(--l1);font-size:11px;white-space:nowrap;pointer-events:none}
 .sht-edit{position:absolute;box-sizing:border-box;font:inherit;padding:0 4px;border:2px solid var(--accent);background:var(--sht-bg);color:var(--l1);outline:none}
 .sht-tabs{flex:none;display:flex;align-items:center;gap:8px;padding:4px 8px;border-top:.5px solid var(--sep);min-width:0}

@@ -95,7 +95,7 @@ export function showPage(st: Store, session: string, path: string) {
   void st.run(async () => {
     if (await window.finx?.openPageFile(session, path)) {
       bringBrowserBack(session);
-      return st.set({ browser: true, background: false, files: false, filesMax: false });
+      return st.set({ browser: true, browserMax: false, background: false, filesMax: false });
     }
     recheckFiles();
     st.show(t("content.missing", { name: baseName(path) }), undefined, true);
@@ -182,7 +182,7 @@ export function openLink(st: Store, url: string, scope: Scope, external: boolean
   void st.run(async () => {
     await finx.openURL(scope.session, url);
     bringBrowserBack(scope.session);
-    st.set({ browser: true, background: false, files: false, filesMax: false });
+    st.set({ browser: true, browserMax: false, background: false, filesMax: false });
   });
 }
 

@@ -59,6 +59,13 @@ enum Item {
     Out(Outgoing),
     /// Deltas merged while waiting; becomes one event when taken.
     Merged(MergedRun),
+    /// Signalled once every preceding item in the queue has been written and flushed.
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+struct Batch {
+    items: Vec<Outgoing>,
+    flushes: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
 struct QueueState {
@@ -120,6 +127,22 @@ impl OutQueue {
             state.items.push_back(Item::Out(item));
         }
         self.notify.notify_one();
+    }
+
+    /// Queues an item and resolves the returned channel once it has been written and flushed.
+    pub fn push_and_flush(&self, item: Outgoing) -> tokio::sync::oneshot::Receiver<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut state = self.state.lock();
+            if state.closed {
+                return rx;
+            }
+            state.bytes += self.charge(item.size());
+            state.items.push_back(Item::Out(item));
+            state.items.push_back(Item::Flush(tx));
+        }
+        self.notify.notify_one();
+        rx
     }
 
     pub fn push_all(&self, items: Vec<Outgoing>) {
@@ -193,23 +216,35 @@ impl OutQueue {
     }
 
     /// Waits for items and takes up to one batch. `None` once closed and drained.
-    async fn take(&self) -> Option<Vec<Outgoing>> {
+    async fn take(&self) -> Option<Batch> {
         loop {
             {
                 let mut state = self.state.lock();
                 if !state.items.is_empty() {
-                    let mut batch = Vec::with_capacity(state.items.len().min(BATCH_ITEMS));
+                    let mut batch = Batch {
+                        items: Vec::with_capacity(state.items.len().min(BATCH_ITEMS)),
+                        flushes: Vec::new(),
+                    };
                     let mut bytes = 0;
                     while !state.items.is_empty() {
-                        if batch.len() >= BATCH_ITEMS || (bytes >= BATCH_BYTES && !batch.is_empty()) {
+                        if !matches!(state.items.front(), Some(Item::Flush(_)))
+                            && (batch.items.len() >= BATCH_ITEMS
+                                || (bytes >= BATCH_BYTES && !batch.items.is_empty()))
+                        {
                             break;
                         }
-                        let item = match state.items.pop_front().expect("not empty") {
-                            Item::Out(item) => item,
-                            Item::Merged(run) => Outgoing::Event(run.into_frame()),
-                        };
-                        bytes += self.charge(item.size());
-                        batch.push(item);
+                        match state.items.pop_front().expect("not empty") {
+                            Item::Out(item) => {
+                                bytes += self.charge(item.size());
+                                batch.items.push(item);
+                            }
+                            Item::Merged(run) => {
+                                let item = Outgoing::Event(run.into_frame());
+                                bytes += self.charge(item.size());
+                                batch.items.push(item);
+                            }
+                            Item::Flush(tx) => batch.flushes.push(tx),
+                        }
                     }
                     // Merged runs are charged by text; the estimate settles at zero when empty.
                     state.bytes = if state.items.is_empty() { 0 } else { state.bytes.saturating_sub(bytes) };
@@ -241,6 +276,10 @@ pub struct ConnHandle {
 impl ConnHandle {
     pub fn send(&self, bytes: Vec<u8>) {
         self.queue.push(Outgoing::Frame(Bytes::from(bytes)));
+    }
+
+    pub fn send_and_flush(&self, bytes: Vec<u8>) -> tokio::sync::oneshot::Receiver<()> {
+        self.queue.push_and_flush(Outgoing::Frame(Bytes::from(bytes)))
     }
 
     pub fn send_error(&self, id: Option<&finx_rpc::Id>, error: &RpcError) {
@@ -311,23 +350,25 @@ async fn write_loop<W: AsyncWrite + Unpin>(conn: ConnHandle, mut encoder: Box<dy
     // Grows to the largest batch seen; an idle connection keeps nothing.
     let mut out: Vec<Bytes> = Vec::new();
     while let Some(batch) = conn.queue.take().await {
-        let batch = if conn.coalesce.load(Ordering::Relaxed) {
-            coalesce_items(batch)
+        let items = if conn.coalesce.load(Ordering::Relaxed) {
+            coalesce_items(batch.items)
         } else {
-            batch
+            batch.items
         };
-        for item in batch {
+        for item in items {
             encoder.encode(item, &mut out);
         }
-        if out.is_empty() {
-            continue;
+        if !out.is_empty() {
+            if let Err(err) = write_all(&mut writer, &out).await {
+                tracing::debug!(conn = conn.id, %err, "connection write failed");
+                conn.queue.close();
+                break;
+            }
+            out.clear();
         }
-        if let Err(err) = write_all(&mut writer, &out).await {
-            tracing::debug!(conn = conn.id, %err, "connection write failed");
-            conn.queue.close();
-            break;
+        for tx in batch.flushes {
+            let _ = tx.send(());
         }
-        out.clear();
     }
     let _ = writer.shutdown().await;
 }
@@ -451,7 +492,7 @@ mod tests {
         queue.push(Outgoing::Frame(Bytes::from_static(b"{}\n")));
         queue.push_event(delta(&s, 4, 0, "d")).unwrap();
         queue.push_event(delta(&s, 5, 1, "e")).unwrap();
-        let batch = queue.take().await.unwrap();
+        let batch = queue.take().await.unwrap().items;
         assert_eq!(batch.len(), 4, "abc merged; the reply and index 1 break runs");
         assert_eq!(
             texts(&batch),
@@ -462,7 +503,7 @@ mod tests {
         for (seq, t) in [(1, "a"), (2, "b")] {
             plain.push_event(delta(&s, seq, 0, t)).unwrap();
         }
-        assert_eq!(plain.take().await.unwrap().len(), 2);
+        assert_eq!(plain.take().await.unwrap().items.len(), 2);
     }
 
     #[test]
@@ -486,5 +527,34 @@ mod tests {
         assert!(queue.pending_bytes() > 160);
         queue.close();
         assert_eq!(queue.push_event(frame), Err(PushError::Closed));
+    }
+
+    struct RawEncoder;
+
+    impl Encoder for RawEncoder {
+        fn encode(&mut self, item: Outgoing, out: &mut Vec<Bytes>) {
+            if let Outgoing::Frame(bytes) = item {
+                out.push(bytes);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn send_and_flush_signals_after_bytes_are_written() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let conn = ConnHandle {
+            id: 1,
+            queue: Arc::new(OutQueue::new(1 << 20, Arc::new(AtomicBool::new(false)))),
+            coalesce: Arc::new(AtomicBool::new(false)),
+            peer_pid: None,
+        };
+        let writer = tokio::spawn(write_loop(conn.clone(), Box::new(RawEncoder), server));
+        let flushed = conn.send_and_flush(b"{\"id\":1,\"result\":{}}\n".to_vec());
+        flushed.await.expect("flush completes after write");
+        // Closing the writer right after flush must still leave the response readable.
+        writer.abort();
+        let mut got = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut client, &mut got).await.unwrap();
+        assert_eq!(got, "{\"id\":1,\"result\":{}}\n");
     }
 }

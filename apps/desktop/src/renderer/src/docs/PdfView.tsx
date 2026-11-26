@@ -6,6 +6,7 @@ import { Icon } from "../icons";
 import { errorText, useStore } from "../store";
 import { maxComment } from "../../../shared/annotations";
 import { loadPdf, pdfjs, viewerLib } from "./pdf";
+import { PdfTranslationPane, type PdfTranslateMode } from "./PdfTranslationPane";
 import { lockedOut, unlockDoc, type SessionFiles, type Tab } from "../files/state";
 import { useScope } from "../session/scope";
 import { quoteToComposer, setDocPassword, setPage, type DocTab, type Jump } from "./state";
@@ -58,6 +59,8 @@ export function PdfView({ rpc, session, tab, jump }: { rpc: RpcClient; session: 
   const [page, setPageNo] = useState(tab.page);
   const [pageDraft, setPageDraft] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
+  const [translating, setTranslating] = useState(false);
+  const [translateMode, setTranslateMode] = useState<PdfTranslateMode>("split");
   const [query, setQuery] = useState<string | null>(null);
   const [matches, setMatches] = useState<{ current: number; total: number } | null>(null);
   const [side, setSide] = useState<"outline" | "pages" | null>(null);
@@ -467,6 +470,23 @@ export function PdfView({ rpc, session, tab, jump }: { rpc: RpcClient; session: 
           <button className={`brp-annotate no-drag ${region ? "on" : ""}`} title={t("doc.regionTool")} aria-label={t("doc.regionTool")} aria-pressed={region} disabled={!pdf} onClick={() => (setRegion(!region), setPending(null), scroller.current?.focus({ preventScroll: true }))}>
             <Icon name="edit" />
           </button>
+          <button
+            className={`brp-annotate brp-translate no-drag ${translating ? "on" : ""}`}
+            title={t("browser.translate")}
+            aria-label={t("browser.translate")}
+            aria-pressed={translating}
+            disabled={!pdf}
+            onClick={() => {
+              const next = !translating;
+              setTranslating(next);
+              if (next) {
+                const w = scroller.current?.closest(".dcp-body")?.clientWidth ?? 900;
+                setTranslateMode(w >= 820 ? "split" : "translated");
+              }
+            }}
+          >
+            <Icon name="translate" />
+          </button>
           <span className="dcp-sep" />
           <form
             className="dcp-page no-drag"
@@ -525,7 +545,12 @@ export function PdfView({ rpc, session, tab, jump }: { rpc: RpcClient; session: 
       {info.scanned && <div className="dcp-note">{t("doc.scanned")}</div>}
       <div className="dcp-body">
         {side && pdf && <Side side={side} setSide={setSide} outline={info.outline ?? []} pdf={pdf} page={page} go={goPage} />}
-        <div className={`dcp-view ${region ? "regioning" : ""}`} onMouseUp={onMouseUp} onPointerDown={startBand}>
+        <div
+          className={`dcp-view ${region ? "regioning" : ""}`}
+          style={{ display: translating && translateMode === "translated" ? "none" : undefined }}
+          onMouseUp={onMouseUp}
+          onPointerDown={startBand}
+        >
           <div className="dcp-scroll" ref={scroller} tabIndex={0}>
             <div className="pdfViewer" ref={pagesEl} />
           </div>
@@ -611,6 +636,29 @@ export function PdfView({ rpc, session, tab, jump }: { rpc: RpcClient; session: 
             </form>
           )}
         </div>
+        {translating && pdf && translateMode !== "original" && (
+          <PdfTranslationPane
+            pdf={pdf}
+            scopeId={`docpdf:${docId}`}
+            title={baseName(tab.info.path)}
+            currentPage={page}
+            mode={translateMode}
+            onMode={setTranslateMode}
+            onFocusParagraph={(targetPage, rects) => {
+              if (translateMode === "translated") setTranslateMode("split");
+              goPage(targetPage);
+              if (rects.length > 0) {
+                const union: Rect = {
+                  x0: Math.min(...rects.map((r) => r.x0)),
+                  y0: Math.min(...rects.map((r) => r.y0)),
+                  x1: Math.max(...rects.map((r) => r.x1)),
+                  y1: Math.max(...rects.map((r) => r.y1)),
+                };
+                setFlash({ parts: [{ page: targetPage, rects: [union] }], seq: Date.now() });
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   );

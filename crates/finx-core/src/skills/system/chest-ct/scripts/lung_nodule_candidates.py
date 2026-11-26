@@ -1,8 +1,12 @@
 """Find lung nodule candidates in a chest CT volume.
 
-Run through `spatial_script`. Input: one JSON string in argv[1], all optional:
-  {"min_mm": 3, "max_mm": 30, "max_candidates": 30, "region": "lung_right"}
-  region: a structure built by scripts/chest_structures.py (default "lungs").
+Run through `spatial_script`. Input: one JSON object in argv[1] (a JSON-encoded
+string is also accepted), all optional:
+  {"min_mm": 3, "max_mm": 30, "max_candidates": 30, "region": "lungs_closed"}
+  region: a structure built by scripts/chest_structures.py. Default "lungs_closed"
+  (air + vessels + nodules): solid nodules are denser than air and lie OUTSIDE the
+  air-only masks, so the original default "lungs" could never find them (v2 fix).
+  The pleura shell is measured on the air-only "lungs" mask when it exists.
 
 Output (also submitted with submit.candidates): a list of candidates, each
   {"id": int, "center_voxel": [k, j, i], "diameter_mm": float,
@@ -38,21 +42,26 @@ def blobness(hu, spacing, mask):
 
 
 def main():
-    args = json.loads(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else {}
+    raw = json.loads(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else {}
+    args = json.loads(raw) if isinstance(raw, str) else raw
     min_mm = float(args.get("min_mm", 3))
     max_mm = float(args.get("max_mm", 30))
     limit = int(args.get("max_candidates", 30))
-    region = args.get("region", "lungs")
+    region = args.get("region", "lungs_closed")
 
     vol = load()
     hu = vol.hu
     sp = np.asarray(vol.spacing, dtype=float)  # (dk, dj, di) in mm
     voxel_mm3 = float(np.prod(sp))
     lungs = vol.segment(region).astype(bool)
+    try:
+        air_lungs = vol.segment("lungs").astype(bool)
+    except Exception:
+        air_lungs = lungs
 
-    # Lung parenchyma interior and the shell near the pleura (within 2 mm of the lung edge).
-    dist_edge = ndi.distance_transform_edt(lungs, sampling=sp)
-    shell = lungs & (dist_edge <= 2.0)
+    # Lung parenchyma interior and the shell near the pleura (within 2 mm of the air-lung edge).
+    dist_edge = ndi.distance_transform_edt(air_lungs, sampling=sp)
+    shell = air_lungs & (dist_edge <= 2.0)
     smooth = ndi.gaussian_filter(hu.astype(np.float32), sigma=0.5 / sp)
 
     # Vessels: bright, very tubular, connected to large structures. Dense = > -300 HU.
@@ -89,7 +98,7 @@ def main():
             full[sl] = m
             ring = ndi.binary_dilation(full, iterations=2) & ~full
             contact = []
-            if (ring & ~lungs).any() or (full & shell).any():
+            if (ring & ~air_lungs).any() or (full & shell).any():
                 contact.append("pleura")
             if kind == "ground_glass":
                 touch_vessel = False

@@ -549,6 +549,7 @@ async fn catalog_only_models_cannot_be_invoked_through_ad_hoc_references() {
             id: id.into(),
             name: id.into(),
             names: Default::default(),
+            api: None,
             context_window: None,
             max_output_tokens: None,
             reasoning: false,

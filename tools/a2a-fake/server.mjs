@@ -6,16 +6,18 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 
 const API_KEY = 'test-key';
+const BASIC = 'Basic ' + Buffer.from('test-user:' + API_KEY).toString('base64');
 const args = process.argv.slice(2);
 
 function usage(message) {
-  process.stderr.write(`${message}\nusage: node server.mjs [--port N] [--host H] [--auth] [--no-streaming] [--provider] [--icon]\n`);
+  process.stderr.write(`${message}\nusage: node server.mjs [--port N] [--host H] [--auth | --basic] [--no-streaming] [--provider] [--icon]\n`);
   process.exit(2);
 }
 
 let portOption;
 let host;
-let auth = false;
+// 'none', 'key' (X-API-Key) or 'basic' (test-user / test-key). POST /control/auth/<mode> changes it.
+let auth = 'none';
 let streaming = true;
 let provider = false;
 let icon = false;
@@ -25,7 +27,8 @@ for (let i = 0; i < args.length; i += 1) {
   switch (args[i]) {
     case '--port': portOption = Number(args[++i]); break;
     case '--host': host = args[++i]; break;
-    case '--auth': auth = true; break;
+    case '--auth': auth = 'key'; break;
+    case '--basic': auth = 'basic'; break;
     case '--no-streaming': streaming = false; break;
     case '--provider': provider = true; break;
     case '--icon': icon = true; break;
@@ -462,7 +465,10 @@ function cardFor(interfaceUrl) {
   };
   if (provider) card.provider = { organization: 'A2A Fake', url: 'https://example.com' };
   if (icon) card.iconUrl = `${publicUrl.origin}/icon.png`;
-  if (auth) {
+  if (auth === 'basic') {
+    card.securitySchemes = { pw: { httpAuthSecurityScheme: { scheme: 'Basic' } } };
+    card.securityRequirements = [{ schemes: { pw: { list: [] } } }];
+  } else if (auth === 'key') {
     card.securitySchemes = { key: { apiKeySecurityScheme: { location: 'header', name: 'X-API-Key' } } };
     card.securityRequirements = [{ schemes: { key: { list: [] } } }];
   }
@@ -499,7 +505,10 @@ function readBody(req) {
 }
 
 async function handleRpc(req, res) {
-  if (auth && req.headers['x-api-key'] !== API_KEY) {
+  const allowed = auth === 'none'
+    || (auth === 'key' && req.headers['x-api-key'] === API_KEY)
+    || (auth === 'basic' && req.headers.authorization === BASIC);
+  if (!allowed) {
     return json(res, 401, rpcError(null, 'AUTH_REQUIRED', 'Authentication required'));
   }
 
@@ -533,6 +542,12 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, publicUrl.origin);
     if (req.method === 'GET' && url.pathname === '/.well-known/agent-card.json') {
       return json(res, 200, cardFor(interfaceUrl()));
+    }
+    const control = url.pathname.match(/^\/control\/auth\/(none|key|basic)$/);
+    if (req.method === 'POST' && control) {
+      auth = control[1];
+      res.writeHead(204);
+      return res.end();
     }
     if (req.method === 'GET' && url.pathname === '/card-elsewhere') {
       return json(res, 200, cardFor('http://example.com/a2a'));

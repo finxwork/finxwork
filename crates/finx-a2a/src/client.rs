@@ -47,6 +47,7 @@ pub enum Auth {
     None,
     ApiKey { header: String, value: String },
     Bearer { token: String },
+    Basic { username: String, password: String },
 }
 
 impl Auth {
@@ -56,6 +57,7 @@ impl Auth {
             Auth::None => "none",
             Auth::ApiKey { .. } => "api_key",
             Auth::Bearer { .. } => "bearer",
+            Auth::Basic { .. } => "basic",
         }
     }
 
@@ -69,6 +71,9 @@ impl Auth {
                 }
             }
             Auth::Bearer { token } if !token.is_empty() => request.bearer_auth(token),
+            Auth::Basic { username, password } if !username.is_empty() => {
+                request.basic_auth(username, Some(password))
+            }
             _ => request,
         }
     }
@@ -86,6 +91,11 @@ impl fmt::Debug for Auth {
             Auth::Bearer { .. } => f
                 .debug_struct("Bearer")
                 .field("token", &"<redacted>")
+                .finish(),
+            Auth::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
                 .finish(),
         }
     }
@@ -709,6 +719,30 @@ mod tests {
                 "done"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn basic_sends_the_user_name_and_password() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            // base64("ann:pa:ss")
+            .and(header("Authorization", "Basic YW5uOnBhOnNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(ROUND, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let client = client(
+            &server,
+            Auth::Basic {
+                username: "ann".to_string(),
+                password: "pa:ss".to_string(),
+            },
+        );
+        let stream = client
+            .send(message(), PeerThread::default(), CancellationToken::new())
+            .await
+            .expect("send");
+        assert!(labels(&events(stream).await).contains(&"done".to_string()));
+        assert!(!format!("{:?}", Auth::Basic { username: "ann".into(), password: "pa:ss".into() }).contains("pa:ss"));
     }
 
     #[tokio::test]

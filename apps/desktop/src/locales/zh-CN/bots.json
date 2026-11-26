@@ -102,13 +102,12 @@
       "stone": "烟灰"
     },
     "newTab": "新建",
-    "addTab": "添加别人的 Bot",
+    "addTab": "连接",
     "add": {
-      "title": "添加别人的 Bot",
-      "sub": "粘贴对方给的链接。",
+      "title": "连接别人的 Bot",
+      "sub": "粘贴对方给的链接。你发给它的内容会发到对方那里。",
       "link": "链接",
       "placeholder": "粘贴对方给的链接",
-      "hint": "对方是另一家机构或另一个人的 Bot。你发给它的内容会发到对方那里。",
       "read": "读取名片",
       "reading": "正在读取名片…",
       "confirm": "确认这个 Bot",
@@ -119,17 +118,17 @@
       "noticeLocal": "你发给它的文字和图片会发给这台 Mac 上的另一个服务（{{host}}）。它看不到你的其他对话和文件，也操作不了这台电脑。",
       "credential": "Key 或令牌",
       "credentialHint": "保存在这台 Mac 的钥匙串里",
-      "needsCredential": "这个 Bot 需要凭证才能添加。",
+      "needsCredential": "这个 Bot 需要凭证才能连接。",
       "back": "换一个链接",
-      "add": "添加",
+      "add": "连接",
       "errors": {
         "unreachable": "读不到这个链接上的名片。",
         "invalid": "这个链接上的不是一张能用的名片。",
         "unsupported": "它用的接入方式这个版本还不支持。",
-        "moved": "名片指向了另一个地址（{{host}}），不能添加。",
+        "moved": "名片指向了另一个地址（{{host}}），不能连接。",
         "changed": "名片在确认前变了，请重新读取。",
-        "off": "这个版本还不能添加别人的 Bot。",
-        "other": "添加没有成功，请再试一次。"
+        "off": "这个版本还不能连接别人的 Bot。",
+        "other": "连接没有成功，请再试一次。"
       }
     }
   },
@@ -261,15 +260,35 @@
     "local": "本机",
     "skills": "能办什么",
     "credential": "凭证",
-    "credentialHint": "保存在这台 Mac 的钥匙串里",
+    "credentialHint": "凭证保存在这台 Mac 的钥匙串里。",
     "credentialSave": "保存",
-    "credentialSaved": "凭证已保存",
-    "needsReview": "对方的名片变了：{{what}}。确认后才会继续发消息。",
+    "credentialSaved": "凭证已更新",
     "review": "我已确认",
     "offeredName": "对方现在叫「{{name}}」",
     "adoptName": "采用这个名字",
     "moved": "对方的名片指向了另一个地址，继续用上次的。",
     "unreachable": "很久没读到对方的名片了，继续用上次的。",
-    "noImages": "{{name}} 收不了图片"
+    "noImages": "{{name}} 收不了图片",
+    "access": "接入",
+    "authKind": "鉴权方式",
+    "auth": {
+      "none": "不需要",
+      "api_key": "API Key",
+      "bearer": "Bearer 令牌",
+      "basic": "用户名和密码"
+    },
+    "credentialReplace": "替换",
+    "reread": "重新读取名片",
+    "rereadDone": "名片已更新",
+    "rereadHint": "对方改了地址或鉴权方式时，重新读取一次就能同步。",
+    "schemeChanged": "对方把鉴权方式改成了「{{auth}}」。在下面填上新的凭证后才会继续发消息。",
+    "schemeDropped": "对方不再需要凭证了。确认后会继续发消息。"
+  },
+  "credential": {
+    "key": "API Key",
+    "token": "令牌",
+    "username": "用户名",
+    "password": "密码",
+    "keep": "已保存，输入新的以替换"
   }
 }

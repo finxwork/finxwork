@@ -362,6 +362,7 @@
   },
   "browser": {
     "annotate": "Add to chat",
+    "translate": "Immersive translate",
     "title": "Browser",
     "builtIn": "Built-in Browser",
     "resize": "Resize the browser panel",
@@ -436,6 +437,21 @@
     "cancel": "Close",
     "adding": "Adding…",
     "shortcut": "↩ to add · ⇧↩ new line"
+  },
+  "pdfTranslate": {
+    "title": "Translation",
+    "viewMode": "PDF translation view mode",
+    "loading": "Loading PDF…",
+    "page": "Page {{page}} / {{total}}",
+    "scanned": "This page appears to be a scanned image with no selectable text.",
+    "noModel": "Configure a model in Settings before translating.",
+    "failed": "Translation failed. Please retry.",
+    "retry": "Retry",
+    "mode": {
+      "split": "Split",
+      "translated": "Translated",
+      "original": "Original"
+    }
   },
   "doc": {
     "title": "Document",
@@ -688,7 +704,9 @@
     "fill": "Fill",
     "fillDown": "Fill down",
     "fillRight": "Fill right",
-    "trace": "Trace"
+    "trace": "Trace",
+    "multiCopyRefused": "Cannot copy misaligned multiple selections; select matching rows or columns",
+    "multiNotSupported": "That command cannot be used on multiple selections"
   },
   "yours": {
     "tabs_one": "{{count}} tab",
@@ -1014,6 +1032,7 @@
     },
     "locate": "Locate",
     "viewSlice": "View slice",
-    "ask": "Ask"
+    "ask": "Ask",
+    "resizeSide": "Resize the slice panel"
   }
 }

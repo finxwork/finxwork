@@ -33,6 +33,8 @@ use finx_protocol::bot::BotAddParams;
 use finx_protocol::bot::BotPreviewParams;
 use finx_protocol::bot::BotSummary;
 use finx_protocol::bot::CardProblem;
+use finx_protocol::bot::BotCredential;
+use finx_protocol::bot::BotCredentialParams;
 use finx_protocol::bot::BotUpdateParams;
 use finx_protocol::bot::RemotePreview;
 use finx_a2a::card::Card;
@@ -229,6 +231,43 @@ pub(crate) struct Registry {
     opening: tokio::sync::Mutex<()>,
     /// Why routines cannot be used here, which every row says.
     routines_error: Mutex<Option<String>>,
+    /// The service of each loaded external bot's conversation, so a new credential or card
+    /// reaches it without reloading the conversation.
+    peers: Mutex<std::collections::HashMap<String, std::sync::Weak<LivePeer>>>,
+}
+
+/// An external bot's service that can be swapped while its conversation is loaded: the next
+/// round uses the new one; a round already running finishes with the old.
+pub(crate) struct LivePeer(Mutex<Arc<dyn finx_core::Peer>>);
+
+impl LivePeer {
+    fn current(&self) -> Arc<dyn finx_core::Peer> {
+        self.0.lock().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl finx_core::Peer for LivePeer {
+    async fn send(
+        &self,
+        message: finx_core::PeerMessage,
+        thread: finx_core::PeerThread,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<futures::stream::BoxStream<'static, finx_core::PeerEvent>, finx_core::PeerError> {
+        self.current().send(message, thread, cancel).await
+    }
+
+    async fn resume(
+        &self,
+        thread: finx_core::PeerThread,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<futures::stream::BoxStream<'static, finx_core::PeerEvent>, finx_core::PeerError> {
+        self.current().resume(thread, cancel).await
+    }
+
+    async fn cancel(&self, thread: finx_core::PeerThread) {
+        self.current().cancel(thread).await
+    }
 }
 
 impl Registry {
@@ -240,6 +279,7 @@ impl Registry {
             writing: Mutex::new(()),
             opening: tokio::sync::Mutex::new(()),
             routines_error: Mutex::new(None),
+            peers: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -510,34 +550,50 @@ fn auth_kind(auth: &finx_a2a::Auth) -> BotAuth {
         finx_a2a::Auth::None => BotAuth::None,
         finx_a2a::Auth::ApiKey { .. } => BotAuth::ApiKey,
         finx_a2a::Auth::Bearer { .. } => BotAuth::Bearer,
+        finx_a2a::Auth::Basic { .. } => BotAuth::Basic,
     }
 }
 
-/// The card's scheme with the credential the owner typed; empty when none is needed.
-fn auth_with(auth: &finx_a2a::Auth, credential: &str) -> Result<finx_a2a::Auth, RpcError> {
+/// What the keychain keeps for a credential the owner typed in the shape `auth` asks for: the
+/// secret itself for an API key or a bearer token (as bots always kept it), JSON for Basic.
+/// `None` when the bot needs no credential.
+fn stored_credential(auth: BotAuth, credential: Option<&BotCredential>) -> Result<Option<String>, RpcError> {
     fn required(kind: &str) -> RpcError {
         errors::bot_auth_required(format!("this bot needs a {kind} credential"))
     }
-    Ok(match auth {
-        finx_a2a::Auth::None => finx_a2a::Auth::None,
-        finx_a2a::Auth::ApiKey { header, .. } => {
-            if credential.trim().is_empty() {
-                return Err(required("API key"));
-            }
-            finx_a2a::Auth::ApiKey {
-                header: header.clone(),
-                value: credential.to_string(),
-            }
+    match (auth, credential) {
+        (BotAuth::None, _) => Ok(None),
+        (BotAuth::ApiKey | BotAuth::Bearer, Some(BotCredential::Secret { value })) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
         }
-        finx_a2a::Auth::Bearer { .. } => {
-            if credential.trim().is_empty() {
-                return Err(required("bearer"));
+        (BotAuth::ApiKey, _) => Err(required("API key")),
+        (BotAuth::Bearer, _) => Err(required("bearer")),
+        (BotAuth::Basic, Some(BotCredential::Basic { username, password })) => {
+            let username = username.trim();
+            // RFC 7617: the user name cannot hold a colon; the password may.
+            if username.is_empty() || username.contains(':') || password.is_empty() {
+                return Err(required("user name and password"));
             }
-            finx_a2a::Auth::Bearer {
-                token: credential.to_string(),
-            }
+            Ok(Some(serde_json::json!({ "username": username, "password": password }).to_string()))
         }
-    })
+        (BotAuth::Basic, _) => Err(required("user name and password")),
+    }
+}
+
+/// Keeps a bot's credential in the keychain. Blocking I/O.
+async fn keep_credential(id: &str, value: String) -> Result<(), RpcError> {
+    let name = format!("bot.{id}");
+    match tokio::task::spawn_blocking(move || finx_llm::credentials::set(&name, &value)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(why)) => {
+            tracing::warn!(bot = %id, "cannot keep the bot's credential: {why}");
+            Err(errors::bot_auth_required("this bot's credential could not be saved"))
+        }
+        Err(err) => {
+            tracing::warn!(bot = %id, "cannot keep the bot's credential: {err}");
+            Err(errors::bot_auth_required("this bot's credential could not be saved"))
+        }
+    }
 }
 
 /// A bot's avatar without an icon: a steady colour from its name, as a new bot gets one (§4.2).
@@ -683,8 +739,7 @@ impl Server {
             return Err(errors::bot_card_changed());
         }
         let id = uuid::Uuid::now_v7().to_string();
-        let credential = params.credential.unwrap_or_default();
-        auth_with(&card.auth, &credential)?;
+        let credential = stored_credential(auth_kind(&card.auth), params.credential.as_ref())?;
         // The icon and the avatar can fail: nothing is kept until they are done, so a failed
         // add leaves no credential behind (bot-contacts-design §5.6).
         let icon = finx_a2a::card::icon(&card, &options).await;
@@ -748,28 +803,48 @@ impl Server {
         }
         // Last, once the bot is on disk: a credential that cannot be kept takes the bot with it,
         // so the list never shows one that cannot answer.
-        if auth_kind(&card.auth) != BotAuth::None {
-            let (name, value) = (format!("bot.{id}"), credential.clone());
-            let kept = tokio::task::spawn_blocking(move || finx_llm::credentials::set(&name, &value)).await;
-            let failed = match kept {
-                Ok(Ok(())) => false,
-                Ok(Err(why)) => {
-                    tracing::warn!(bot = %id, "cannot keep the bot's credential: {why}");
-                    true
-                }
-                Err(err) => {
-                    tracing::warn!(bot = %id, "cannot keep the bot's credential: {err}");
-                    true
-                }
-            };
-            if failed {
-                registry.with(|bots| bots.remove(&id));
-                let _ = std::fs::remove_dir_all(self.0.home.bot_dir(&id));
-                return Err(errors::bot_auth_required("this bot's credential could not be saved"));
-            }
+        if let Some(value) = credential
+            && let Err(err) = keep_credential(&id, value).await
+        {
+            registry.with(|bots| bots.remove(&id));
+            let _ = std::fs::remove_dir_all(self.0.home.bot_dir(&id));
+            return Err(err);
         }
         registry.announce(&[&id], Vec::new());
         Ok(BotResult { bot: registry.row(&id)? })
+    }
+
+    /// `bots/credential`: the owner replaces an external bot's credential, in the shape its card
+    /// asks for now; a credential scheme change waiting for them is settled by it (§5.6).
+    pub async fn bots_credential(&self, params: BotCredentialParams) -> Result<BotResult, RpcError> {
+        let id = params.bot_id;
+        let Some(mut source) = self.bots().source(&id) else {
+            self.bots().with_bot(&id, |_| ())?;
+            return Err(errors::bot_not_supported());
+        };
+        let Some(value) = stored_credential(source.auth, Some(&params.credential))? else {
+            return Err(errors::bot_auth_required("this bot takes no credential"));
+        };
+        keep_credential(&id, value).await?;
+        if source.needs_review.is_some() {
+            source.needs_review = None;
+            self.save_source(&id, source).await?;
+        } else {
+            self.bots().announce(&[&id], Vec::new());
+        }
+        self.renew_peer(&id).await;
+        Ok(BotResult { bot: self.bots().row(&id)? })
+    }
+
+    /// `bots/reread`: reads an external bot's card now (§5.6). Unlike the daily reading, a card
+    /// that cannot be read is an error the owner sees.
+    pub async fn bots_reread(&self, id: &str) -> Result<BotResult, RpcError> {
+        if self.bots().source(id).is_none() {
+            self.bots().with_bot(id, |_| ())?;
+            return Err(errors::bot_not_supported());
+        }
+        self.read_card(id, true).await?;
+        Ok(BotResult { bot: self.bots().row(id)? })
     }
 
     /// The card reader's options, from `[bots]` (§5.8).
@@ -791,6 +866,12 @@ impl Server {
     /// Reads an external bot's card again when it is a day old, and follows what changed
     /// (§5.6). It never blocks the conversation: failures leave the last card in use.
     async fn refresh_card(&self, id: &str) -> Result<(), RpcError> {
+        self.read_card(id, false).await
+    }
+
+    /// Reads the card and follows what changed (§5.6). `now`: the owner asked, so it is read
+    /// whatever its age and a failure to read it is returned.
+    async fn read_card(&self, id: &str, now_asked: bool) -> Result<(), RpcError> {
         let Some(mut source) = self.bots().source(id) else {
             return Ok(());
         };
@@ -798,17 +879,21 @@ impl Server {
         let read_at = chrono::DateTime::parse_from_rfc3339(&source.card_read_at)
             .map(|time| time.with_timezone(&chrono::Utc))
             .unwrap_or(now);
-        if now - read_at < chrono::Duration::hours(24) {
+        if !now_asked && now - read_at < chrono::Duration::hours(24) {
             return Ok(());
         }
         let options = self.card_options();
-        let Ok(card) = Card::read(&source.card_url, &options).await else {
-            // Seven days without a card: the bot's settings say so; the last one stays in use.
-            if now - read_at > chrono::Duration::days(7) && source.card_problem != Some(CardProblem::Unreachable) {
-                source.card_problem = Some(CardProblem::Unreachable);
-                self.save_source(id, source).await?;
+        let card = match Card::read(&source.card_url, &options).await {
+            Ok(card) => card,
+            Err(err) if now_asked => return Err(errors::from_card(err)),
+            Err(_) => {
+                // Seven days without a card: the bot's settings say so; the last one stays in use.
+                if now - read_at > chrono::Duration::days(7) && source.card_problem != Some(CardProblem::Unreachable) {
+                    source.card_problem = Some(CardProblem::Unreachable);
+                    self.save_source(id, source).await?;
+                }
+                return Ok(());
             }
-            return Ok(());
         };
         let host = host_of(&card.endpoint.url)?;
         if host != source.host {
@@ -816,7 +901,7 @@ impl Server {
             source.card_problem = Some(CardProblem::Moved);
             source.card_read_at = now.to_rfc3339();
             self.save_source(id, source).await?;
-            return Ok(());
+            return if now_asked { Err(errors::from_card(finx_a2a::CardError::Moved(host))) } else { Ok(()) };
         }
         let was = source.auth;
         let hash = Card::hash(&card);
@@ -844,7 +929,14 @@ impl Server {
             // A card is not a way to rename a bot silently (§5.6).
             source.offered_name = Some(card.name.clone());
         }
-        self.save_source(id, source).await
+        let renew = was == source.auth;
+        self.save_source(id, source).await?;
+        // Same scheme: the conversation follows a moved endpoint or tenant now. A new scheme
+        // waits for the owner's new credential (`bots/credential`).
+        if renew {
+            self.renew_peer(id).await;
+        }
+        Ok(())
     }
 
     /// Writes a changed source and tells the list (§5.6).
@@ -862,6 +954,30 @@ impl Server {
     /// The service behind an external bot, with its credential from the keychain (§5.3, §5.6).
     /// `None` for this computer's own bots. Blocking I/O: the keychain.
     pub(crate) fn peer_connection(&self, id: &str) -> Result<Option<(Arc<dyn finx_core::Peer>, PeerRef)>, RpcError> {
+        let Some((peer, at)) = self.peer_now(id)? else {
+            return Ok(None);
+        };
+        let live = Arc::new(LivePeer(Mutex::new(peer)));
+        self.bots().peers.lock().insert(id.to_string(), Arc::downgrade(&live));
+        Ok(Some((live, at)))
+    }
+
+    /// Gives a loaded conversation the bot's service as its source and keychain say now (§5.6).
+    /// A credential that is missing or unusable leaves the old one; the next round says why.
+    async fn renew_peer(&self, id: &str) {
+        let Some(live) = self.bots().peers.lock().get(id).and_then(std::sync::Weak::upgrade) else {
+            return;
+        };
+        let (server, owned) = (self.clone(), id.to_string());
+        match tokio::task::spawn_blocking(move || server.peer_now(&owned)).await {
+            Ok(Ok(Some((peer, _)))) => *live.0.lock() = peer,
+            Ok(Err(err)) => tracing::debug!(bot = %id, "the conversation keeps its service: {}", err.message),
+            _ => {}
+        }
+    }
+
+    /// The service behind an external bot right now. Blocking I/O: the keychain.
+    fn peer_now(&self, id: &str) -> Result<Option<(Arc<dyn finx_core::Peer>, PeerRef)>, RpcError> {
         let Some(source) = self.bots().source(id) else {
             return Ok(None);
         };
@@ -877,6 +993,17 @@ impl Server {
                 value: credential()?,
             },
             BotAuth::Bearer => finx_a2a::Auth::Bearer { token: credential()? },
+            BotAuth::Basic => {
+                #[derive(serde::Deserialize)]
+                struct Kept {
+                    username: String,
+                    password: String,
+                }
+                let kept: Kept = serde_json::from_str(&credential()?).map_err(|_| {
+                    errors::bot_auth_required("this bot's credential is not a user name and password: set it in the bot's settings")
+                })?;
+                finx_a2a::Auth::Basic { username: kept.username, password: kept.password }
+            }
         };
         let peer = finx_a2a::A2aPeer::new(finx_a2a::Source {
             endpoint: source.endpoint,

@@ -39,10 +39,14 @@ export function skillMenu(item: SkillItem, a: Actions, c: Customize, t: TFunctio
 }
 
 export function serverMenu(s: McpServerView, a: Actions, c: Customize, t: TFunction<"customize">, withView: boolean): MenuItem[] {
+  const busy = c.checkingUpdate.has(s.name) || c.upgrading.has(s.name);
   return [
     ...(withView ? [{ id: "view", label: t("connector.view"), icon: "info" as const, run: () => a.open({ kind: "connector", id: s.name, tab: "overview" }) }] : []),
     ...(s.editable && !s.connector && withView ? [{ id: "edit", label: t("connector.edit"), icon: "edit" as const, run: () => a.edit(s) }] : []),
     ...(s.status.state !== "untrusted" ? [{ id: "check", label: t("connector.recheck"), icon: "retry" as const, run: () => void c.check(s.name) }] : []),
+    ...(s.update_supported && s.status.state !== "untrusted"
+      ? [{ id: "checkUpdate", label: t("connector.checkUpdate"), icon: "arrowUp" as const, disabled: busy, run: () => void c.checkUpdate(s.name) }]
+      : []),
     ...(s.file ? [{ id: "reveal", label: t("connector.revealFile"), icon: "folder" as const, run: () => window.finx?.revealPath(s.file!) }] : []),
     ...(s.editable ? [null, { id: "remove", label: t("connector.remove"), icon: "trash" as const, danger: true, run: () => c.removeServer(s) }] : []),
   ];
@@ -192,6 +196,10 @@ function ServerRow({ s, c, a }: { s: McpServerView; c: Customize; a: Actions }) 
   const open = () => a.open({ kind: "connector", id: s.name, tab: "overview" });
   const label = repo ? (s.enabled ? t("connector.turnOffForYou") : t("connector.turnOnForYou")) : s.enabled ? t("connector.turnOff") : t("connector.turnOn");
   const description = cat ? catalogText(t, `catalog.connectors.${cat.id}`) : s.description;
+  const update = c.updates.get(s.name);
+  const checkingUpdate = c.checkingUpdate.has(s.name);
+  const upgrading = c.upgrading.has(s.name);
+  const hasUpdate = !!update?.latest_version && (update.status === "update_available" || (update.status === "unknown" && update.can_upgrade));
   return (
     <div className={`cz-row ${s.enabled ? "" : "off"}`} role="button" tabIndex={0} onClick={open} onKeyDown={(e) => e.key === "Enter" && e.target === e.currentTarget && open()}>
       <ServerTile name={cat?.name ?? s.name} mono={cat?.mono} icon={s.icon ?? catalogLogo(cat)} />
@@ -199,6 +207,7 @@ function ServerRow({ s, c, a }: { s: McpServerView; c: Customize; a: Actions }) 
         <div className="rn">
           <span className="nm">{cat?.name ?? s.name}</span>
           {!cat && !repo && <span className="badge">{t("connector.custom")}</span>}
+          {hasUpdate && <span className="badge acc">{t("connector.updateAvailable", { version: update.latest_version })}</span>}
         </div>
         {description ? (
           <div className="rd">{description}</div>
@@ -209,7 +218,32 @@ function ServerRow({ s, c, a }: { s: McpServerView; c: Customize; a: Actions }) 
         )}
       </div>
       <div className="ra">
-        <Status look={statusOf(s, c.checking.has(s.name))} onCheck={() => void c.check(s.name)} onLogin={c.signingIn.has(s.name) ? undefined : () => void c.login(s.name)} />
+        {upgrading ? (
+          <span className="cz-st">
+            <span className="mini-spin cz-spin" />
+            {t("connector.upgrading")}
+          </span>
+        ) : checkingUpdate ? (
+          <span className="cz-st">
+            <span className="mini-spin cz-spin" />
+            {t("connector.checkingUpdate")}
+          </span>
+        ) : (
+          <>
+            {hasUpdate && update.can_upgrade && (
+              <button
+                className="link"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void c.upgrade(s.name);
+                }}
+              >
+                {t("connector.upgrade")}
+              </button>
+            )}
+            <Status look={statusOf(s, c.checking.has(s.name))} onCheck={() => void c.check(s.name)} onLogin={c.signingIn.has(s.name) ? undefined : () => void c.login(s.name)} />
+          </>
+        )}
         {s.status.state !== "untrusted" && <Switch disabled={!!s.connector && s.auth_state !== "logged_in"} on={s.enabled} label={label} onChange={(on) => a.toggleServer(s, on)} />}
         <MoreButton label={t("more")} items={() => serverMenu(s, a, c, t, true)} />
       </div>

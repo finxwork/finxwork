@@ -11,6 +11,7 @@ import { clearBotChat, runBotAction } from "./actions";
 import { BotAvatar } from "./Avatar";
 import { AvatarChoices, NAME_MAX, pickPicture } from "./BotSheet";
 import { ModelRows } from "./ModelRows";
+import { CredentialFields, credentialOf, emptyDraft } from "./Credential";
 
 /**
  * A bot's settings (bot-mode-design §6.5.1), opened from its name at the top of its page: its
@@ -81,7 +82,9 @@ function ExternalSection({ bot }: { bot: BotSummary }) {
   const { t } = useTranslation("bots");
   const st = useStore();
   const source = bot.source!;
-  const [credential, setCredential] = useState("");
+  const [draft, setDraft] = useState(emptyDraft);
+  const [busy, setBusy] = useState(false);
+  const credential = credentialOf(source.auth, draft);
   const local = /^(localhost|127\.|\[::1\]|::1)/.test(source.host);
   return (
     <section className="bs-ext">
@@ -93,21 +96,6 @@ function ExternalSection({ bot }: { bot: BotSummary }) {
           </div>
         </>
       )}
-      <div className="fgroup">
-        {source.provider && (
-          <div className="frow">
-            <span className="fl">{t("external.provider")}</span>
-            <div className="fv">{source.provider}</div>
-          </div>
-        )}
-        <div className="frow">
-          <span className="fl">{t("external.host")}</span>
-          <div className="fv">
-            <span className="mono">{source.host}</span>
-            {local && <span className="bs-tag">{t("external.local")}</span>}
-          </div>
-        </div>
-      </div>
       {source.skills.length > 0 && (
         <>
           <h3 className="fhead">{t("external.skills")}</h3>
@@ -125,13 +113,15 @@ function ExternalSection({ bot }: { bot: BotSummary }) {
       )}
       {source.needs_review && (
         <div className="knote" role="status">
-          <p className="knote-b">{t("external.needsReview", { what: source.needs_review })}</p>
-          <div className="appr-f">
-            <span className="appr-sp" />
-            <button className="btn primary" onClick={() => void st.run(() => st.call("bots/update", { bot_id: bot.id, accept_review: true }))}>
-              {t("external.review")}
-            </button>
-          </div>
+          <p className="knote-b">{t(source.auth === "none" ? "external.schemeDropped" : "external.schemeChanged", { auth: t(`external.auth.${source.auth}`) })}</p>
+          {source.auth === "none" && (
+            <div className="appr-f">
+              <span className="appr-sp" />
+              <button className="btn primary" onClick={() => void st.run(() => st.call("bots/update", { bot_id: bot.id, accept_review: true }))}>
+                {t("external.review")}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {source.offered_name && (
@@ -148,30 +138,60 @@ function ExternalSection({ bot }: { bot: BotSummary }) {
       {(source.card_problem === "moved" || source.card_problem === "unreachable") && (
         <p className="set-note bs-problem">{t(source.card_problem === "moved" ? "external.moved" : "external.unreachable")}</p>
       )}
-      {source.auth !== "none" && (
-        <section>
-          <h3 className="fhead">{t("external.credential")}</h3>
-          <div className="fgroup">
-            <div className="frow">
-              <input className="field" type="password" value={credential} placeholder={source.auth} onChange={(e) => setCredential(e.target.value)} />
+      <h3 className="fhead">{t("external.access")}</h3>
+      <div className="fgroup">
+        {source.provider && (
+          <div className="frow">
+            <span className="fl">{t("external.provider")}</span>
+            <div className="fv">{source.provider}</div>
+          </div>
+        )}
+        <div className="frow">
+          <span className="fl">{t("external.host")}</span>
+          <div className="fv">
+            <span className="mono">{source.host}</span>
+            {local && <span className="bs-tag">{t("external.local")}</span>}
+          </div>
+        </div>
+        <div className="frow">
+          <span className="fl">{t("external.authKind")}</span>
+          <div className="fv">{t(`external.auth.${source.auth}`)}</div>
+        </div>
+        {source.auth !== "none" && (
+          <div className="frow bs-cred-row">
+            <CredentialFields auth={source.auth} draft={draft} onChange={setDraft} saved={!source.needs_review} autoFocus={!!source.needs_review} />
+            <div className="bs-cred-act">
               <button
                 className="btn"
-                disabled={!credential.trim()}
+                disabled={!credential || busy}
                 onClick={() => {
-                  const value = credential.trim();
-                  void st.run(async () => {
-                    await st.call("credentials/set", { name: `bot.${bot.id}`, value });
-                    setCredential("");
-                  }, t("external.credentialSaved"));
+                  if (!credential) return;
+                  setBusy(true);
+                  void st
+                    .run(async () => {
+                      await st.call("bots/credential", { bot_id: bot.id, credential });
+                      setDraft(emptyDraft);
+                    }, t("external.credentialSaved"))
+                    .finally(() => setBusy(false));
                 }}
               >
-                {t("external.credentialSave")}
+                {t(source.needs_review ? "external.credentialSave" : "external.credentialReplace")}
               </button>
             </div>
-            <p className="set-note">{t("external.credentialHint")}</p>
           </div>
-        </section>
-      )}
+        )}
+        <button
+          className="frow bs-reread"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void st.run(() => st.call("bots/reread", { bot_id: bot.id }), t("external.rereadDone")).finally(() => setBusy(false));
+          }}
+        >
+          {t("external.reread")}
+        </button>
+      </div>
+      <p className="set-note">{t(source.auth === "none" ? "external.rereadHint" : "external.credentialHint")}</p>
     </section>
   );
 }

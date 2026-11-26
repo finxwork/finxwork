@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import type { PagePreviewRect, BrowserMenuAction, BrowserPanel, BrowserTabCommand, Command, DesktopApp, DesktopControlStatus, DesktopPermission, EditorInfo, MenuItem, MenuState, PastedItem, PickedFile, Preferences } from "../shared/bridge";
 import { i18n } from "../shared/i18n";
-import { claimHomeBrowser, currentTabs, openBrowser, openURL, setPanel, showTab, tabCommand } from "./browser/pages";
+import { cancelScopeTranslation, claimHomeBrowser, currentTabs, fetchTabPdf, openBrowser, openURL, setPanel, showTab, tabCommand, translateScopeBlocks } from "./browser/pages";
+import type { TranslationBlock } from "../shared/translation";
 import { closePagePreview, openPagePreview, placePagePreview } from "./browser/pagePreview";
 import { devServers, stopDevServer } from "./browser/devservers";
 import { diagnoseSystemBrowser, openSystemBrowser, openSystemBrowserQuietly, refreshSystemBrowser, revealExtension, setUpSystemBrowser, systemBrowserIcon, systemBrowsers } from "./browser/system";
@@ -50,7 +51,7 @@ function tabCommandOk(c: unknown): c is BrowserTabCommand {
     const { engine } = c as Record<string, unknown>;
     return typeof url === "string" && url.length <= 8192 && (engine === undefined || (typeof engine === "string" && engine.length <= 80));
   }
-  return ["back", "forward", "reload", "stop", "close", "new", "annotate"].includes(command as string);
+  return ["back", "forward", "reload", "stop", "close", "new", "annotate", "translate"].includes(command as string);
 }
 
 /** A menu pick as the page sends it. */
@@ -308,6 +309,25 @@ export function registerIPC() {
   ipcMain.handle("browser-tabs", (e) => (trusted(e) ? currentTabs() : []));
   ipcMain.on("browser-show", (e, targetId: unknown) => trusted(e) && typeof targetId === "string" && showTab(targetId));
   ipcMain.on("browser-command", (e, targetId: unknown, c: unknown) => trusted(e) && typeof targetId === "string" && tabCommandOk(c) && tabCommand(targetId, c));
+  ipcMain.handle("browser-fetch-pdf", (e, targetId: unknown) => {
+    if (!trusted(e) || typeof targetId !== "string" || !targetId) throw new Error("Invalid browser tab");
+    return fetchTabPdf(targetId);
+  });
+  ipcMain.handle("translate-blocks", (e, scopeId: unknown, req: unknown) => {
+    if (!trusted(e) || typeof scopeId !== "string" || !scopeId || !req || typeof req !== "object") {
+      throw new Error("Invalid translation request");
+    }
+    const r = req as Record<string, unknown>;
+    const title = typeof r.title === "string" ? r.title : "";
+    const targetLanguage = typeof r.targetLanguage === "string" ? r.targetLanguage : "";
+    const rawItems = Array.isArray(r.items) ? r.items : [];
+    const items: TranslationBlock[] = rawItems.filter(
+      (x): x is TranslationBlock =>
+        !!x && typeof x === "object" && typeof (x as TranslationBlock).id === "string" && typeof (x as TranslationBlock).text === "string",
+    );
+    return translateScopeBlocks(scopeId, title, targetLanguage, items);
+  });
+  ipcMain.on("translate-cancel", (e, scopeId: unknown) => trusted(e) && typeof scopeId === "string" && scopeId && cancelScopeTranslation(scopeId));
   // The app's own processes (its helpers, finx) are not servers to offer.
   ipcMain.handle("browser-menu-state", (e, targetId: unknown) => {
     if (!trusted(e) || (targetId !== null && typeof targetId !== "string")) throw new Error("Invalid browser tab");

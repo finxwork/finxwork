@@ -6,6 +6,7 @@
 //! servers (and a deferred server's `direct_tools`) go into the tool list.
 
 pub mod cache;
+pub mod update;
 pub mod views;
 pub(crate) mod tools;
 
@@ -379,6 +380,7 @@ fn record(dir: &Path, server: &McpServer, workspace: &Path, status: &ServerStatu
         error: status.error.clone(),
         elapsed_ms: status.elapsed_ms,
         instructions: server.instructions(),
+        server_version: server.info().map(|i| i.version).filter(|v| !v.trim().is_empty()),
         tools: tools.iter().map(|t| (t.name.as_str(), t.title.as_deref(), t.description.as_deref())).collect(),
     };
     if let Err(err) = cache::write(dir, server.config(), workspace, outcome, throttle) {

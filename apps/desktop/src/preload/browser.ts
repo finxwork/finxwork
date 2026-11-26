@@ -1,5 +1,6 @@
 import { ipcRenderer } from "electron";
 import { maxComment, type AnnotationAnchor, type AnnotationState } from "../shared/annotations";
+import { initBrowserTranslation } from "./browser-translate";
 import en from "../locales/en/session.json" with { type: "json" };
 import zh from "../locales/zh-CN/session.json" with { type: "json" };
 
@@ -264,10 +265,14 @@ if (process.isMainFrame) {
     void ipcRenderer.invoke("browser-annotation", { action: "exit", url: state.url }).then(accept).catch(() => showNotice(t().readError));
   }
   const ownEvent = (e: Event) => !!host && e.composedPath().includes(host);
+  const pickTarget = (raw: EventTarget | null): Element | null => {
+    if (!(raw instanceof Element)) return null;
+    return raw.hasAttribute("data-finx-translation") ? raw.parentElement : raw;
+  };
   // On the window, in the capture phase, before anything the page registers: the preload runs first.
   window.addEventListener("pointermove", (e) => {
     if (!state.enabled) return;
-    const next = ownEvent(e) || !(e.target instanceof Element) ? null : e.target;
+    const next = ownEvent(e) ? null : pickTarget(e.target);
     if (next === hover) return;
     hover = next; if (hover) highlightLabel.textContent = describe(hover);
     schedule();
@@ -279,7 +284,7 @@ if (process.isMainFrame) {
       if (!state.enabled || ownEvent(e) || e.button !== 0) return;
       e.preventDefault(); e.stopImmediatePropagation();
       if (name !== "click" || pending) return;
-      const el = e.target instanceof Element ? e.target : null;
+      const el = pickTarget(e.target);
       if (!el) return;
       const r = el.getBoundingClientRect();
       const anchor = { selector: selector(el), text: text(el), tag: el.localName,
@@ -303,4 +308,5 @@ if (process.isMainFrame) {
     new ResizeObserver(schedule).observe(document.documentElement);
     if (supported()) void ipcRenderer.invoke("browser-annotation", { action: "read", url: location.href }).then(accept).catch(() => {});
   }, { once: true });
+  initBrowserTranslation();
 }

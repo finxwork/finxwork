@@ -9,6 +9,7 @@ import { SiteIcon, siteOrigin } from "../siteIcon";
 import { allEngines, type SearchEngine } from "../../../shared/search";
 import { EngineIcon } from "../settings/BuiltInBrowser";
 import { BrowserMenu } from "./BrowserMenu";
+import { BrowserPdfView } from "./BrowserPdfView";
 import { NewTabPage } from "./NewTabPage";
 
 // The embedded browser's panel (browser-design §8.3.4), drawn as a browser: the session's
@@ -56,10 +57,10 @@ const conversationRoom = () => 160;
  * then starts with the sidebar's toggle when the sidebar is hidden, as the conversation's bar
  * does.
  */
-export function BrowserPanel({ session, tabs, max, onMax, onClose }: { session: string; tabs: BrowserTab[]; max: boolean; onMax: (max: boolean) => void; onClose: () => void }) {
+export function BrowserPanel({ session, tabs, max, dual = false, onMax, onClose }: { session: string; tabs: BrowserTab[]; max: boolean; dual?: boolean; onMax: (max: boolean) => void; onClose: () => void }) {
   const { t } = useTranslation("session");
   const room = useRef<HTMLDivElement>(null);
-  const { panel, width, resizing, style, grip } = usePanelWidth("finxwork.browserPanelWidth", conversationRoom);
+  const { panel, width, resizing, style, grip } = usePanelWidth("finxwork.browserPanelWidth", () => conversationRoom() + (dual ? 280 : 0));
   const current = tabs.find((x) => x.shown) ?? tabs[tabs.length - 1];
   /** What the person is typing in the address field; null shows the tab's address. */
   const [draft, setDraft] = useState<string | null>(null);
@@ -86,12 +87,13 @@ export function BrowserPanel({ session, tabs, max, onMax, onClose }: { session: 
   useEffect(() => window.finx?.onBrowserStill((s) => s.session === session && setStill(s)), [session]);
 
   // Where the tab's view goes, in window coordinates; reported again as it moves or resizes.
+  const pdfBilingual = !!(current?.isPdf && current?.translating);
   useLayoutEffect(() => {
     const el = room.current;
     const finx = window.finx;
     if (!el || !finx) return;
-    if (covered) {
-      finx.setBrowserPanel({ session, rect: null, hold: true });
+    if (covered || pdfBilingual) {
+      finx.setBrowserPanel({ session, rect: null, hold: covered });
       return;
     }
     const report = () => {
@@ -106,7 +108,7 @@ export function BrowserPanel({ session, tabs, max, onMax, onClose }: { session: 
       observer.disconnect();
       window.removeEventListener("resize", report);
     };
-  }, [session, covered, editing]);
+  }, [session, covered, pdfBilingual, editing, dual]);
   // Gone (another session, or the panel closed): no room for a tab here.
   useEffect(() => () => window.finx?.setBrowserPanel({ session: null, rect: null }), [session]);
 
@@ -182,6 +184,11 @@ export function BrowserPanel({ session, tabs, max, onMax, onClose }: { session: 
           title={t("browser.annotate")} aria-label={t("browser.annotate")} onClick={() => command(current, { command: "annotate" })}>
           <Icon name="edit" />
         </button>
+        <button className={`brp-annotate brp-translate ${current?.translating ? "on" : ""}`} aria-pressed={!!current?.translating}
+          disabled={!current?.domReady || !/^https?:/.test(current.url)}
+          title={t("browser.translate")} aria-label={t("browser.translate")} onClick={() => command(current, { command: "translate" })}>
+          <Icon name="translate" />
+        </button>
         <form
           className="brp-addr"
           onSubmit={(e) => {
@@ -251,6 +258,9 @@ export function BrowserPanel({ session, tabs, max, onMax, onClose }: { session: 
       <div className="brp-view" ref={room}>
         {/* Keyed by tab: each new tab looks again. */}
         {current && currentBlank && !current.loading && <NewTabPage key={current.targetId} open={(url) => command(current, { command: "go", url })} />}
+        {current && pdfBilingual && !covered && (
+          <BrowserPdfView key={`${current.targetId}:${current.url}`} targetId={current.targetId} url={current.url} title={current.title} />
+        )}
         {covered && still && !currentBlank && <img className="brp-still" src={still.image} style={{ width: still.width }} alt="" />}
       </div>
       {/* Last: the window's drag areas are laid in page order, and the edge must win over the tab strip's. */}

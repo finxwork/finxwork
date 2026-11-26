@@ -333,9 +333,17 @@ function ServerPage({ c, a, s, onBack }: { c: Customize; a: Actions; s: McpServe
         ? { k: remote ? t("connector.token") : t("connector.secret"), v: keyNames.join(", "), sub: s.auth_state === "missing" ? t("connector.keyMissing") : t("connector.keySaved") }
         : null;
 
+  const update = c.updates.get(s.name);
+  const checkingUpdate = c.checkingUpdate.has(s.name);
+  const upgrading = c.upgrading.has(s.name);
+  const hasUpdate = !!update?.latest_version && (update.status === "update_available" || (update.status === "unknown" && update.can_upgrade));
+
   const menu = (): MenuItem[] => [
     ...(s.editable && !s.connector ? [{ id: "edit", label: t("connector.edit"), icon: "edit" as const, run: () => a.edit(s) }, null] : []),
     ...(!untrusted ? [{ id: "check", label: t("connector.recheck"), icon: "retry" as const, run: () => void c.check(s.name) }] : []),
+    ...(s.update_supported && !untrusted
+      ? [{ id: "checkUpdate", label: t("connector.checkUpdate"), icon: "arrowUp" as const, disabled: checkingUpdate || upgrading, run: () => void c.checkUpdate(s.name) }]
+      : []),
     ...(s.connector && cat ? [{ id: "reinstall", label: t("managed.reinstall"), icon: "retry" as const, run: () => a.addConnector(cat) }] : []),
     ...(!s.connector ? [{ id: "copy", label: remote ? t("connector.copyAddress") : t("connector.copyCommand"), icon: "copy" as const, run: copy }] : []),
     ...(s.auth === "oauth" && s.auth_state === "logged_in" ? [{ id: "logout", label: t("connector.signOut"), icon: "logout" as const, run: () => void c.logout(s.name) }] : []),
@@ -420,6 +428,12 @@ function ServerPage({ c, a, s, onBack }: { c: Customize; a: Actions; s: McpServe
           <h1>{name}</h1>
           {!cat && <span className="badge">{repo ? t("connector.providerRepo") : t("connector.custom")}</span>}
           <div className="cz-dacts">
+            {s.update_supported && !untrusted && (
+              <button className="btn" disabled={checkingUpdate || upgrading} onClick={() => void c.checkUpdate(s.name)}>
+                {checkingUpdate ? <span className="mini-spin" /> : <Icon name="arrowUp" />}
+                {checkingUpdate ? t("connector.checkingUpdate") : t("connector.checkUpdate")}
+              </button>
+            )}
             {!untrusted && (
               <label className="cz-swl">
                 {repo ? t("connector.enabledForYou") : t("connector.enabled")}
@@ -437,6 +451,12 @@ function ServerPage({ c, a, s, onBack }: { c: Customize; a: Actions; s: McpServe
               {stText}
             </div>
           </div>
+          {s.server_version && (
+            <div className="cz-fact">
+              <div className="k">{t("connector.version")}</div>
+              <div className="v">{s.server_version}</div>
+            </div>
+          )}
           {access && (
             <div className="cz-fact">
               <div className="k">{access.k}</div>
@@ -467,6 +487,30 @@ function ServerPage({ c, a, s, onBack }: { c: Customize; a: Actions; s: McpServe
         </div>
       </div>
       {note}
+      {hasUpdate && (
+        <Note
+          kind="info"
+          title={t("connector.updateAvailableTitle", { latest: update.latest_version })}
+          action={
+            update.can_upgrade ? (
+              <button className="btn primary" disabled={upgrading} onClick={() => void c.upgrade(s.name)}>
+                {upgrading && <span className="mini-spin" />}
+                {upgrading ? t("connector.upgrading") : t("connector.upgradeNow")}
+              </button>
+            ) : update.release_url ? (
+              <button className="btn" onClick={() => window.finx?.openExternal(update.release_url!)}>
+                {t("connector.viewRelease")}
+              </button>
+            ) : undefined
+          }
+        >
+          {update.detail
+            ? update.detail
+            : update.current_version
+              ? t("connector.updateAvailableBody", { current: update.current_version, latest: update.latest_version })
+              : t("connector.updateAvailableUnknownBody", { latest: update.latest_version })}
+        </Note>
+      )}
       {description && (
         <section className="cz-dsum">
           <div className="k">{t("connector.summary")}</div>

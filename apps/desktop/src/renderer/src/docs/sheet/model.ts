@@ -1,8 +1,139 @@
 import type { CellData, SheetOp } from "@finx/protocol";
-import { addr, colName, type Area } from "../cellref.ts";
+import { addr, areaOf, colName, rangeText, type Area, type Pos } from "../cellref.ts";
 
 // The grid's pure parts (spreadsheet-design §8): what a person types as an op, how a cell's
 // colour reads on a dark background, a selection as text, and the sizes dragged here.
+
+/**
+ * A selection: its active range from `anchor` to `focus` (`at`, when set, the active cell Enter
+ * and Tab moved to inside it), plus any additional non-contiguous areas added with ⌘/Ctrl.
+ */
+export type Sel = { anchor: Pos; focus: Pos; at?: Pos; extra?: Area[] };
+
+/** An inclusive 1-based span of rows or columns. */
+export type Span = [number, number];
+
+/** Every area in `sel`, with the active one last. */
+export const selectedAreas = (sel: Sel): Area[] => [...(sel.extra ?? []), areaOf(sel.anchor, sel.focus)];
+
+/** Whether `sel` holds more than one area (non-contiguous selection). */
+export const isDisjoint = (sel: Sel): boolean => !!sel.extra?.length;
+
+export const inAreas = (areas: readonly Area[], r: number, c: number): boolean =>
+  areas.some((a) => r >= a.r1 && r <= a.r2 && c >= a.c1 && c <= a.c2);
+
+export const colSelected = (areas: readonly Area[], c: number): boolean => areas.some((a) => c >= a.c1 && c <= a.c2);
+export const rowSelected = (areas: readonly Area[], r: number): boolean => areas.some((a) => r >= a.r1 && r <= a.r2);
+
+/** Ranges as Excel formats a multi-area reference (`A1:A10,C1:C10`). */
+export const rangesText = (areas: readonly Area[]): string => areas.map(rangeText).join(",");
+
+/** Merges overlapping or adjacent 1-based spans into sorted, disjoint spans. */
+function coalesce(raw: Span[]): Span[] {
+  if (raw.length <= 1) return raw;
+  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: Span[] = [raw[0]];
+  for (let i = 1; i < raw.length; i++) {
+    const prev = out[out.length - 1];
+    if (raw[i][0] <= prev[1] + 1) prev[1] = Math.max(prev[1], raw[i][1]);
+    else out.push(raw[i]);
+  }
+  return out;
+}
+
+/** Distinct row or column spans covered by `areas`, sorted ascending. */
+export function mergeSpans(areas: readonly Area[], axis: "rows" | "cols"): Span[] {
+  return coalesce(areas.map((a) => (axis === "rows" ? [a.r1, a.r2] : [a.c1, a.c2])));
+}
+
+export const spanCount = (spans: readonly Span[]): number => spans.reduce((n, [a, b]) => n + (b - a + 1), 0);
+
+export const inSpans = (spans: readonly Span[], n: number): boolean => spans.some(([a, b]) => n >= a && n <= b);
+
+export function expandSpans(spans: readonly Span[]): number[] {
+  const out: number[] = [];
+  for (const [a, b] of spans) for (let i = a; i <= b; i++) out.push(i);
+  return out;
+}
+
+/** Merged spans of columns selected as whole columns (rows 1..maxRow). */
+export function wholeCols(areas: readonly Area[], maxRow: number): Span[] {
+  return coalesce(areas.filter((a) => a.r1 === 1 && a.r2 >= maxRow).map((a) => [a.c1, a.c2]));
+}
+
+/** Merged spans of rows selected as whole rows (cols 1..maxCol). */
+export function wholeRows(areas: readonly Area[], maxCol: number): Span[] {
+  return coalesce(areas.filter((a) => a.c1 === 1 && a.c2 >= maxCol).map((a) => [a.r1, a.r2]));
+}
+
+/**
+ * Removes a single whole column or row `n` from `sel` (⌘/Ctrl-clicking an already-selected header).
+ * Never empties the selection: if `n` is the only selected area, `sel` is returned unchanged.
+ */
+export function toggleLine(sel: Sel, axis: "cols" | "rows", n: number, extent: number): Sel {
+  const next: Area[] = [];
+  for (const a of selectedAreas(sel)) {
+    const whole = axis === "cols" ? a.r1 === 1 && a.r2 >= extent && n >= a.c1 && n <= a.c2 : a.c1 === 1 && a.c2 >= extent && n >= a.r1 && n <= a.r2;
+    if (!whole) {
+      next.push(a);
+    } else if (axis === "cols") {
+      if (a.c1 < n) next.push({ ...a, c2: n - 1 });
+      if (a.c2 > n) next.push({ ...a, c1: n + 1 });
+    } else {
+      if (a.r1 < n) next.push({ ...a, r2: n - 1 });
+      if (a.r2 > n) next.push({ ...a, r1: n + 1 });
+    }
+  }
+  if (!next.length) return sel;
+  const last = next.pop()!;
+  return { anchor: { r: last.r1, c: last.c1 }, focus: { r: last.r2, c: last.c2 }, ...(next.length ? { extra: next } : {}) };
+}
+
+/** Elementary coordinate-compressed intervals along an axis. */
+function segments(areas: readonly Area[], axis: "rows" | "cols"): Span[] {
+  const pts = new Set<number>();
+  for (const a of areas) {
+    pts.add(axis === "rows" ? a.r1 : a.c1);
+    pts.add((axis === "rows" ? a.r2 : a.c2) + 1);
+  }
+  const sorted = [...pts].sort((a, b) => a - b);
+  const segs: Span[] = [];
+  for (let i = 0; i + 1 < sorted.length; i++) segs.push([sorted[i], sorted[i + 1] - 1]);
+  return segs;
+}
+
+/** Exact number of unique cells covered by `areas` (handles overlaps in O(k³) without enumerating cells). */
+export function areaCellCount(areas: readonly Area[]): number {
+  if (areas.length === 0) return 0;
+  if (areas.length === 1) return (areas[0].r2 - areas[0].r1 + 1) * (areas[0].c2 - areas[0].c1 + 1);
+  const rSegs = segments(areas, "rows");
+  const cSegs = segments(areas, "cols");
+  let total = 0;
+  for (const [r1, r2] of rSegs) {
+    for (const [c1, c2] of cSegs) {
+      if (inAreas(areas, r1, c1)) total += (r2 - r1 + 1) * (c2 - c1 + 1);
+    }
+  }
+  return total;
+}
+
+/**
+ * Excel's rule for copying multiple areas: the union of `areas` must form a complete R × C grid
+ * (e.g., whole columns A and C, whole rows 1 and 3, or matching blocks). Returns the sorted unique
+ * row and column spans to copy, or null when the selection is misaligned.
+ */
+export function copyGrid(areas: readonly Area[]): { rowSpans: Span[]; colSpans: Span[] } | null {
+  if (areas.length === 0) return null;
+  if (areas.length === 1) return { rowSpans: [[areas[0].r1, areas[0].r2]], colSpans: [[areas[0].c1, areas[0].c2]] };
+  const rSegs = segments(areas, "rows").filter(([r]) => areas.some((a) => r >= a.r1 && r <= a.r2));
+  const cSegs = segments(areas, "cols").filter(([c]) => areas.some((a) => c >= a.c1 && c <= a.c2));
+  for (const [r] of rSegs) {
+    for (const [c] of cSegs) {
+      if (!inAreas(areas, r, c)) return null;
+    }
+  }
+  return { rowSpans: coalesce(rSegs.map(([a, b]) => [a, b])), colSpans: coalesce(cSegs.map(([a, b]) => [a, b])) };
+}
 
 /** What a person typed, as Excel reads it: a formula, a number (with thousands or %), TRUE/FALSE, text. */
 export function inputOp(sheet: string, cell: string, raw: string): SheetOp {
@@ -38,23 +169,33 @@ export function readable(hex: string | null | undefined, dark: boolean): string 
   return `rgb(${up(r)},${up(g)},${up(b)})`;
 }
 
-const rows = (g: Area) => Array.from({ length: g.r2 - g.r1 + 1 }, (_, i) => g.r1 + i);
-const cols = (g: Area) => Array.from({ length: g.c2 - g.c1 + 1 }, (_, i) => g.c1 + i);
+/** Cells across row/column spans as tab-separated lines, as spreadsheets paste them. */
+export function toTsvGrid(rowSpans: readonly Span[], colSpans: readonly Span[], text: (cell: string) => string | undefined): string {
+  const rs = expandSpans(rowSpans);
+  const cs = expandSpans(colSpans);
+  return rs.map((r) => cs.map((c) => text(addr({ r, c })) ?? "").join("\t")).join("\n");
+}
 
 /** An area's cells as tab-separated lines, as spreadsheets paste them. */
 export function toTsv(g: Area, text: (cell: string) => string | undefined): string {
-  return rows(g).map((r) => cols(g).map((c) => text(addr({ r, c })) ?? "").join("\t")).join("\n");
+  return toTsvGrid([[g.r1, g.r2]], [[g.c1, g.c2]], text);
 }
 
-/** An area's cells as a Markdown table, with the column letters and row numbers. */
-export function toMarkdown(g: Area, text: (cell: string) => string | undefined): string {
-  const cs = cols(g);
+/** Cells across row/column spans as a Markdown table, with the column letters and row numbers. */
+export function toMarkdownGrid(rowSpans: readonly Span[], colSpans: readonly Span[], text: (cell: string) => string | undefined): string {
+  const rs = expandSpans(rowSpans);
+  const cs = expandSpans(colSpans);
   const esc = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
   return [
     `| | ${cs.map(colName).join(" | ")} |`,
     `|---|${cs.map(() => "---").join("|")}|`,
-    ...rows(g).map((r) => `| ${r} | ${cs.map((c) => esc(text(addr({ r, c })) ?? "")).join(" | ")} |`),
+    ...rs.map((r) => `| ${r} | ${cs.map((c) => esc(text(addr({ r, c })) ?? "")).join(" | ")} |`),
   ].join("\n");
+}
+
+/** An area's cells as a Markdown table, with the column letters and row numbers. */
+export function toMarkdown(g: Area, text: (cell: string) => string | undefined): string {
+  return toMarkdownGrid([[g.r1, g.r2]], [[g.c1, g.c2]], text);
 }
 
 /** Widths and heights dragged here, by `sheet\0n`: how the grid shows them, not written to the file. */
@@ -102,10 +243,16 @@ export type SelectionStats = { count: number; numbers: number; sum: number; aver
  * Null for a single cell or nothing in it. With an error value among them the sum is not told
  * (`error`), as a total that quietly leaves a #REF! out would mislead.
  */
-export function selectionStats(cells: readonly CellData[], area: Area): SelectionStats | null {
-  if (area.r1 === area.r2 && area.c1 === area.c2) return null;
+export function selectionStats(cells: readonly CellData[], area: Area | readonly Area[]): SelectionStats | null {
+  const list = Array.isArray(area) ? area : [area];
+  if (areaCellCount(list) <= 1) return null;
+  const seen = list.length > 1 ? new Set<string>() : null;
   let count = 0, numbers = 0, sum = 0, error = false;
   for (const c of cells) {
+    if (seen) {
+      if (seen.has(c.cell)) continue;
+      seen.add(c.cell);
+    }
     if (!c.text && !c.value) continue;
     count++;
     if (c.value?.type === "number") {

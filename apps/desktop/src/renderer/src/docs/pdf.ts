@@ -45,14 +45,8 @@ class RangeTransport extends pdfjs.PDFDataRangeTransport {
   }
 }
 
-/** Opens the working copy a token stands for. */
-export async function loadPdf(token: string, password?: string): Promise<pdfjs.PDFDocumentProxy> {
-  const url = `finxdoc://${token}/current.pdf`;
-  const first = await fetch(url, { headers: { range: `bytes=0-${chunk - 1}` } });
-  if (!first.ok) throw new Error(`cannot read the document (HTTP ${first.status})`);
-  const total = Number(/\/(\d+)$/.exec(first.headers.get("content-range") ?? "")?.[1] ?? first.headers.get("content-length"));
-  const initial = new Uint8Array(await first.arrayBuffer());
-  const common = {
+function pdfOptions(password?: string) {
+  return {
     isEvalSupported: false,
     enableXfa: false,
     password,
@@ -62,6 +56,22 @@ export async function loadPdf(token: string, password?: string): Promise<pdfjs.P
     wasmUrl: data("wasm"),
     rangeChunkSize: chunk,
   };
+}
+
+/** Opens the working copy a token stands for. */
+export async function loadPdf(token: string, password?: string): Promise<pdfjs.PDFDocumentProxy> {
+  const url = `finxdoc://${token}/current.pdf`;
+  const first = await fetch(url, { headers: { range: `bytes=0-${chunk - 1}` } });
+  if (!first.ok) throw new Error(`cannot read the document (HTTP ${first.status})`);
+  const total = Number(/\/(\d+)$/.exec(first.headers.get("content-range") ?? "")?.[1] ?? first.headers.get("content-length"));
+  const initial = new Uint8Array(await first.arrayBuffer());
+  const common = pdfOptions(password);
   const src = initial.length >= total ? { ...common, data: initial } : { ...common, range: new RangeTransport(url, total, initial) };
   return pdfjs.getDocument(src).promise;
+}
+
+/** Opens a PDF directly from in-memory bytes (e.g. fetched from an embedded browser tab). */
+export async function loadPdfBytes(bytes: Uint8Array, password?: string): Promise<pdfjs.PDFDocumentProxy> {
+  // Pass a copy because pdf.js transfers the underlying ArrayBuffer to its worker.
+  return pdfjs.getDocument({ ...pdfOptions(password), data: new Uint8Array(bytes) }).promise;
 }

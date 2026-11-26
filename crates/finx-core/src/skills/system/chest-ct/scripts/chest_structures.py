@@ -1,14 +1,27 @@
 """Build the structures of a chest CT: body, airway, both lungs, lung vessels, bones.
 
-Run through `spatial_script`. Input: one JSON string in argv[1], all optional:
-  {"lung_hu": -400,                 # air/tissue limit for body and lungs
-   "airway_range": [-950, -850],    # the airway grows from the first limit towards the second
+Run through `spatial_script`. Input: one JSON object in argv[1] (a JSON-encoded
+string is also accepted), all optional:
+  {"lung_hu": -400,                 # air/tissue limit for body and lungs; "auto" picks it from the histogram
+   "airway_range": [-950, -850],    # the airway grows from the first limit towards the second; "auto" starts conservative on deep-inspiration/noisy scans
    "airway_step": 10, "leak_ratio": 1.6, "airway_max_ml": 250,
    "airway_gap_mm": 1,              # how far around the airway is kept out of the lungs
    "vessel_hu": -300, "vessel_min_mm3": 20,
    "bone_hu": 200, "bone_min_mm3": 500, "bone_keep_largest": 0,   # 0 keeps every piece
    "skip": ["airway"],              # structures not to build
-   "expect_scale": 1.0}             # scales every expected volume (a child: about 0.3)
+   "expect_scale": 1.0,             # scales every expected volume (a child: about 0.3)
+   "auto_retry": true}              # when a result falls outside its expected range, retry with tighter inputs (at most 2 extra builds)
+
+v2 changes over the original:
+  * the airway result is checked against its expected volume, not just against leaks:
+    a result above the cap triggers an automatic retry with a tighter range, down to
+    trachea-and-main-bronchi only, instead of silently hollowing out the lungs;
+  * the lungs are checked too: if they come out under expectation while the airway is
+    large, the airway is rebuilt conservatively and the lungs regrown;
+  * "auto" inputs read the scan's own histogram: deep inspiration (a large share of
+    voxels below -950 HU inside the body) or high noise starts with the conservative
+    airway range; the lung limit is placed in the valley between air and tissue;
+  * every automatic decision is printed as a note, so the reader sees what was tried.
 
 Output: structures submitted to the document, each with the volume it is expected to have;
 the kernel measures them and reports any outside that as unreliable. Printed: one line per
@@ -489,10 +502,48 @@ def build_lungs(hu, body, airway, axes, limit, gap_mm):
     return one, halves == 1, halves == 2, notes
 
 
+def parse_args(argv):
+    """Accept both a JSON object and a double-encoded JSON string in argv[1]."""
+    if len(argv) <= 1 or not argv[1]:
+        return {}
+    a = json.loads(argv[1])
+    if isinstance(a, str):
+        a = json.loads(a)
+    if not isinstance(a, dict):
+        raise ValueError("input must be a JSON object")
+    return a
+
+
+def survey_scan(hu, body, sp):
+    """Cheap facts about this scan: noise outside the body, the share of very dark
+    voxels inside it (deep inspiration / emphysema), and a lung/air limit from the
+    histogram valley. Returns (sigma, dark_share, lung_hu_suggestion)."""
+    outside = hu[~body]
+    sigma = float(outside.std()) if outside.size else 0.0
+    inside = hu[body]
+    dark_share = float((inside < -950).mean()) if inside.size else 0.0
+    # Histogram of the body's voxels between -1000 and 0 HU, 25-HU bins; the valley
+    # between the air peak and the tissue rise is where the lung limit belongs.
+    hist, edges = np.histogram(np.clip(inside, -1000, 0), bins=40, range=(-1000, 0))
+    centres = (edges[:-1] + edges[1:]) / 2
+    air_peak = int(np.argmax(hist))
+    # The last local minimum before the tissue rise: keep the deepest valley seen
+    # while walking up from the air peak, stop once tissue clearly dominates.
+    valley = air_peak
+    for b in range(air_peak + 1, len(hist)):
+        if hist[b] < hist[valley]:
+            valley = b
+        elif hist[b] > 3.0 * max(hist[valley], 1) and centres[b] > -750:
+            break
+    suggestion = float(np.clip(centres[valley], -700, -350))
+    return sigma, dark_share, suggestion
+
+
 def main():
-    args = json.loads(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else {}
-    lung_hu = float(args.get("lung_hu", -400))
-    lo, hi = (float(v) for v in args.get("airway_range", [-950, -850]))
+    args = parse_args(sys.argv)
+    lung_arg = args.get("lung_hu", -400)
+    air_arg = args.get("airway_range", [-950, -850])
+    auto_retry = bool(args.get("auto_retry", True))
     skip = set(args.get("skip", []))
     scale = float(args.get("expect_scale", 1.0))
 
@@ -519,6 +570,24 @@ def main():
         submit.structure(whole, id, name, color, notes=list(notes), **kw)
         clock[0] = time.perf_counter()
 
+    body0 = build_body(full, -400 if lung_arg == "auto" else float(lung_arg), axes)
+    sigma, dark_share, valley_hu = survey_scan(full, body0, sp)
+    auto_notes = [f"survey: background sigma {sigma:.0f} HU, {dark_share * 100:.0f}% of the body below -950 HU, histogram valley near {valley_hu:.0f} HU"]
+    if lung_arg == "auto":
+        lung_hu = valley_hu
+        auto_notes.append(f"lung_hu auto -> {lung_hu:.0f} HU")
+    else:
+        lung_hu = float(lung_arg)
+    deep = dark_share > 0.35 or sigma > 35.0
+    if air_arg == "auto":
+        lo, hi = ([-1000, -950] if deep else [-950, -850])
+        auto_notes.append(f"airway_range auto -> [{lo:.0f}, {hi:.0f}]" + (" (deep inspiration or noisy scan: starting conservative)" if deep else ""))
+    else:
+        lo, hi = (float(v) for v in air_arg)
+    for n in auto_notes:
+        print("auto: " + n)
+    del body0
+
     body = build_body(full, lung_hu, axes)
     out(body, "body", "体表", "#c8a48a", opacity=0.15)
     # Everything else lies inside the body: work in its box, not in the air around it.
@@ -526,22 +595,56 @@ def main():
     axes.crop(box, full.shape)
     hu, body = full[box], body[box]
 
-    airway = np.zeros(hu.shape, bool)
-    if "airway" not in skip:
+    def grow_airway(hu, lo, hi, extra_notes=()):
         grow = (lo, hi, float(args.get("airway_step", 10)), float(args.get("leak_ratio", 1.6)), float(args.get("airway_max_ml", 250)))
-        airway, notes, bad = build_airway(hu, body, axes, *grow)
-        if bad or airway.sum() * voxel_mm3 / 1000.0 < AIRWAY_SMALL_ML * scale:
+        aw, notes, bad = build_airway(hu, body, axes, *grow)
+        if bad or aw.sum() * voxel_mm3 / 1000.0 < AIRWAY_SMALL_ML * scale:
             # A noisy scan breaks the lumen up at a tight limit and lets it leak at a loose
             # one. Smoothed, the lumen holds together; both are guarded against leaks, so the
             # one that got further is the better airway.
             smooth = ndi.gaussian_filter(hu.astype(np.float32), sigma=SMOOTH_MM / sp)
             again = build_airway(smooth, body, axes, *grow)
             del smooth
-            if again[2] is None and again[0].sum() > airway.sum():
-                airway, notes, bad = again[0], [f"grown on the scan smoothed by {SMOOTH_MM} mm (it is noisy): " + "; ".join(again[1])], None
-        out(airway, "airway", "气道", "#f2e394", notes, expect_ml=expect(10, 250), unreliable=bad)
+            if again[2] is None and again[0].sum() > aw.sum():
+                aw, notes, bad = again[0], [f"grown on the scan smoothed by {SMOOTH_MM} mm (it is noisy): " + "; ".join(again[1])], None
+        return aw, list(extra_notes) + notes, bad
 
-    lungs, right, left, notes = build_lungs(hu, body, airway, axes, lung_hu, float(args.get("airway_gap_mm", 1)))
+    airway = np.zeros(hu.shape, bool)
+    airway_bad = None
+    if "airway" not in skip:
+        airway, notes, airway_bad = grow_airway(hu, lo, hi)
+        aw_ml = airway.sum() * voxel_mm3 / 1000.0
+        # The expected range takes part in the decision, not just the labelling: an
+        # airway over the cap has leaked whatever the leak watcher said, and taking it
+        # would hollow out the lungs. Retry tighter, at most twice.
+        retries = 0
+        while auto_retry and retries < 2 and (airway_bad or aw_ml > 250 * scale):
+            retries += 1
+            if lo <= -1000 and hi <= -950:
+                break  # already at the tightest range
+            # tighten towards trachea-and-main-bronchi only: [-980,-960] then [-1000,-950]
+            if hi > -950:
+                lo, hi = max(lo - 30, -1000), -950
+            else:
+                lo, hi = -1000, -950
+            hi = max(hi, lo + 10)
+            note = f"airway was {aw_ml:.0f} mL (cap {250 * scale:.0f} mL) or unreliable; retry {retries} with [{lo:.0f}, {hi:.0f}]"
+            print("auto: " + note)
+            airway, notes, airway_bad = grow_airway(hu, lo, hi, extra_notes=[note])
+            aw_ml = airway.sum() * voxel_mm3 / 1000.0
+        out(airway, "airway", "气道", "#f2e394", notes, expect_ml=expect(10, 250), unreliable=airway_bad)
+
+    gap = float(args.get("airway_gap_mm", 1))
+    lungs, right, left, notes = build_lungs(hu, body, airway, axes, lung_hu, gap)
+    # The lungs pay for the airway's mistakes: if they came out tiny while the airway
+    # is large, rebuild the airway as trachea-and-main-bronchi only and regrow.
+    lung_ml = lungs.sum() * voxel_mm3 / 1000.0
+    if auto_retry and "airway" not in skip and lung_ml < 1500 * scale and airway.sum() * voxel_mm3 / 1000.0 > 250 * scale:
+        note = f"lungs only {lung_ml:.0f} mL with a {airway.sum() * voxel_mm3 / 1000.0:.0f} mL airway: the airway took the lungs; rebuilding it at [-1000, -950]"
+        print("auto: " + note)
+        airway, anotes, airway_bad = grow_airway(hu, -1000, -950, extra_notes=[note])
+        out(airway, "airway", "气道", "#f2e394", anotes, expect_ml=expect(10, 250), unreliable=airway_bad)
+        lungs, right, left, notes = build_lungs(hu, body, airway, axes, lung_hu, gap)
     out(lungs, "lungs", "双肺", "#4a90d9", notes, opacity=0.35, hidden=True, expect_ml=expect(1500, 9000))
     lungs_closed = closed(lungs, 5.0, sp)
     out(lungs_closed, "lungs_closed", "双肺（含血管）", "#4a90d9", hidden=True)

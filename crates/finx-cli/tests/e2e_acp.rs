@@ -409,7 +409,7 @@ async fn acp_announces_commands_and_runs_skills() {
             json!({"name": "skill:commit-style", "description": "Commit messages."}),
             json!({"name": "skill:gen-report", "description": "Generate the weekly report.", "input": {"hint": "[week]"}}),
             // Built into finx (docs/desktop/customize-design.md §4.6).
-            json!({"name": "skill:medical-imaging", "description": "Help a person understand their own CT or MRI study and its report. Use when the user attaches or mentions a CT/MRI DICOM zip, folder or files, asks where something in an imaging report is (a nodule, a shadow, a lesion), or types /ct. Opens the scan beside the conversation, builds a 3D chest model, and locates report findings on the slices."}),
+            json!({"name": "skill:chest-ct", "description": "Help a person understand their own chest CT study and its report. Use when the user attaches or mentions a chest CT DICOM zip, folder or files, asks where something in a chest CT report is (a nodule, a shadow, a lesion), or types /ct. Opens the scan beside the conversation, builds a 3D chest model, and locates report findings on the slices."}),
             json!({"name": "skill:skill-creator", "description": "Create, improve, and evaluate skills using realistic test cases, baseline comparisons, and user feedback."}),
         ]
     );

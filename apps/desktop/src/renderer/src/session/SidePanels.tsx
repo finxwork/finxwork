@@ -7,11 +7,11 @@ import { filesChanged, isPasswordError, lockedOut, setFilesConnection, showDoc, 
 import { Icon } from "../icons";
 import { useStore } from "../store";
 import { BrowserPanel, useBrowserTabs } from "./Browser";
-import { bringBrowserBack, browserPutAway, putBrowserAway } from "./browserPanel";
+import { bringBrowserBack, browserPutAway, putBrowserAway, sidePanelLayout } from "./browserPanel";
 import { recheckFiles } from "./scope";
 
 // The file panel, PDFs included, and the browser beside a conversation: what a session's page and
-// a bot's page share. One panel on the right at a time.
+// a bot's page share. They can stay open side by side (e.g. a link opened from a Markdown file).
 
 export type SidePanels = ReturnType<typeof useSidePanels>;
 
@@ -47,11 +47,16 @@ export function useSidePanels(session: string, view: SessionView | null, held = 
   const tabs = useBrowserTabs().filter((t) => t.session === session);
   const cwd = view?.info.cwd;
   useDocEvents(st.rpc, session, cwd);
-  // The file panel when opened (file-panel-design §3.1), its PDFs too (document-editor-design §7.1), else the browser.
-  const files = st.files && !held && !!view;
-  const browser = st.browser && tabs.length > 0 && !held && !files;
-  // Taking the window, the panel leaves the conversation mounted but out of sight, where it was.
-  const max = (browser && st.browserMax) || (files && st.filesMax);
+  // The file panel (file-panel-design §3.1), its PDFs too (document-editor-design §7.1), and the browser can stay open side by side.
+  const { files, browser, filesMax, browserMax, max, dual } = sidePanelLayout({
+    files: st.files,
+    filesMax: st.filesMax,
+    browser: st.browser,
+    browserMax: st.browserMax,
+    hasView: !!view,
+    hasTabs: tabs.length > 0,
+    held,
+  });
   useSidebarForFiles(files);
   const rpc = st.rpc;
   const opener = useMemo<DocOpener | null>(() => {
@@ -114,7 +119,7 @@ export function useSidePanels(session: string, view: SessionView | null, held = 
   // A task that ended may have made or removed the files the replies point at.
   const ended = view?.entries.filter((e) => e.type === "task_end").length ?? 0;
   useEffect(() => recheckFiles(), [ended]);
-  return { session, tabs, files, browser, max, opener };
+  return { session, tabs, files, browser, filesMax, browserMax, max, dual, opener };
 }
 
 /** The buttons for them in the page's bar; while a panel is open its button sits at the panel's right end instead, where it puts the panel away. */
@@ -133,10 +138,10 @@ export function SidePanelButtons({ panels }: { panels: SidePanels }) {
           aria-pressed={false}
           onClick={() => {
             bringBrowserBack(session);
-            if (tabs.length > 0) st.set({ browser: true, background: false, files: false, filesMax: false });
+            if (tabs.length > 0) st.set({ browser: true, browserMax: false, background: false, filesMax: false });
             else void st.run(async () => {
               await window.finx?.openBrowser(session);
-              st.set({ browser: true, background: false, files: false, filesMax: false });
+              st.set({ browser: true, browserMax: false, background: false, filesMax: false });
             });
           }}
         >
@@ -151,7 +156,7 @@ export function SidePanelButtons({ panels }: { panels: SidePanels }) {
           aria-label={t("files.title")}
           aria-pressed={false}
           onClick={() => {
-            st.set({ files: true, browser: false, browserMax: false, background: false });
+            st.set({ files: true, filesMax: false, browserMax: false, background: false });
           }}
         >
           <Icon name="folder" />
@@ -161,27 +166,28 @@ export function SidePanelButtons({ panels }: { panels: SidePanels }) {
   );
 }
 
-/** The panel that is open, beside the page's column. */
+/** The panels that are open, beside the page's column. */
 export function SidePanelViews({ panels, view }: { panels: SidePanels; view: SessionView | null }) {
   const st = useStore();
-  const { session, tabs, files, browser, max } = panels;
+  const { session, tabs, files, browser, filesMax, browserMax, dual } = panels;
   return (
     <>
       {files && view && (
         <FilePanel
           session={session}
           cwd={view.info.cwd}
-          max={st.filesMax}
-          onMax={(m) => st.set({ filesMax: m })}
+          max={filesMax}
+          onMax={(m) => st.set({ filesMax: m, ...(m && { browserMax: false }) })}
           onClose={() => st.set({ files: false, filesMax: false })}
         />
       )}
-      {browser && (
+      {browser && !filesMax && (
         <BrowserPanel
           session={session}
           tabs={tabs}
-          max={max}
-          onMax={(m) => st.set({ browserMax: m })}
+          max={browserMax}
+          dual={dual}
+          onMax={(m) => st.set({ browserMax: m, ...(m && { filesMax: false }) })}
           onClose={() => {
             putBrowserAway(session);
             st.set({ browser: false, browserMax: false });

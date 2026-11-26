@@ -303,6 +303,7 @@ test("a finx serve started from a terminal stays when it runs the app's finx, an
     other.s.start();
     await other.s.ready();
     await takenOver(other.s, terminal.pid!);
+    await until(() => !alive(terminal.pid!));
     assert.ok(!alive(terminal.pid!), "another build goes, as one of another version does");
   } finally {
     await cleanup();

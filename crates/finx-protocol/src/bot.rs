@@ -210,6 +210,26 @@ pub enum BotAuth {
     None,
     ApiKey,
     Bearer,
+    /// HTTP Basic: a user name and a password.
+    Basic,
+}
+
+/// A credential for an external bot, shaped by its card's scheme: one secret for an API key or a
+/// bearer token, a user name and a password for HTTP Basic. It goes to the keychain only.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BotCredential {
+    Secret { value: String },
+    Basic { username: String, password: String },
+}
+
+impl std::fmt::Debug for BotCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BotCredential::Secret { .. } => f.write_str("Secret(<redacted>)"),
+            BotCredential::Basic { username, .. } => write!(f, "Basic({username}, <redacted>)"),
+        }
+    }
 }
 
 /// One of an external bot's skills, as its card names it.
@@ -303,7 +323,15 @@ pub struct BotAddParams {
     pub url: String,
     pub card_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
+    pub credential: Option<BotCredential>,
+}
+
+/// Parameters of `bots/credential`: a new credential for an external bot, in the shape its card
+/// asks for now. It also settles a credential scheme change waiting for the owner (§5.6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BotCredentialParams {
+    pub bot_id: String,
+    pub credential: BotCredential,
 }
 
 /// Parameters of `bots/avatar`, `bots/read`, `bots/unread`, `bots/clear` and `bots/delete`.

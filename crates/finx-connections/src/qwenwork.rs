@@ -122,6 +122,15 @@ fn display_name(entry: &Value) -> Option<&str> {
         })
 }
 
+/// Maps QwenWork's catalog `format` to a Finx wire API (`None` = connection default `openai-chat`).
+fn wire_api(format: Option<&str>) -> Option<Option<&'static str>> {
+    match format {
+        Some("openai/chat-completions") => Some(None),
+        Some("anthropic/messages") => Some(Some("anthropic-messages")),
+        _ => None,
+    }
+}
+
 impl QwenWork {
     pub fn new(id: String, identity: String, environment: Arc<dyn Environment>) -> Self {
         Self {
@@ -178,7 +187,7 @@ impl QwenWork {
             .ok_or_else(|| ConnectionError::format("catalog", "catalog"))?;
         for (index, entry) in entries.iter().enumerate() {
             if entry["enable"] == true
-                && entry["format"] == "openai/chat-completions"
+                && wire_api(entry["format"].as_str()).is_some()
                 && !entry["key"].as_str().is_some_and(crate::valid_id)
             {
                 return Err(ConnectionError::format(
@@ -189,13 +198,16 @@ impl QwenWork {
         }
         let models: Vec<_> = entries
             .iter()
-            .filter(|m| m["enable"] == true && m["format"] == "openai/chat-completions")
             .filter_map(|m| {
+                if m["enable"] != true {
+                    return None;
+                }
+                let api = wire_api(m["format"].as_str())?;
                 let id = m["key"].as_str()?;
                 if !crate::valid_id(id) {
                     return None;
                 }
-                tracing::debug!(model = id, is_reasoning = %m["is_reasoning"], thinking = %m["thinking_config"], "QwenWork catalog entry");
+                tracing::debug!(model = id, api = ?api, is_reasoning = %m["is_reasoning"], thinking = %m["thinking_config"], "QwenWork catalog entry");
                 let (thinking, default_thinking) = thinking_of(id, m);
                 Some(ConnectionModel {
                     id: id.into(),
@@ -209,6 +221,7 @@ impl QwenWork {
                             (!name.is_empty()).then(|| (language.clone(), name.to_string()))
                         })
                         .collect(),
+                    api: api.map(str::to_string),
                     context_window: m["max_input_tokens"]
                         .as_u64()
                         .and_then(|n| u32::try_from(n).ok()),

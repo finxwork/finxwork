@@ -939,6 +939,7 @@ impl ChatGpt {
                 id: id.into(),
                 name: m["display_name"].as_str().unwrap_or(id).into(),
                 names: Default::default(),
+                api: None,
                 context_window: m["context_window"]
                     .as_u64()
                     .map(|v| v.clamp(1024, 2_000_000) as u32),

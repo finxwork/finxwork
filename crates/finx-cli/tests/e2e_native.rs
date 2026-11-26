@@ -433,22 +433,22 @@ async fn skills_list_reports_a_session_and_a_directory() {
     // A directory: what a session there would find, the same as `finx skills --all --json`.
     let scanned = client.request("skills/list", json!({"cwd": work})).await.unwrap();
     schema.check("SkillsListResult", &scanned);
-    assert_eq!(names(&scanned, "skills"), ["lint", "broken", "gen-report", "medical-imaging", "skill-creator"]);
+    assert_eq!(names(&scanned, "skills"), ["lint", "broken", "gen-report", "chest-ct", "skill-creator"]);
     assert_eq!(scanned["skills"][1]["state"], "invalid");
     assert_eq!(scanned["catalog"]["listed"], 2, "lint is for the user only");
     let output = env.finx_in(&work, &["skills", "--all", "--json"]).output().await.unwrap();
     assert_eq!(scanned, serde_json::from_slice::<Value>(&output.stdout).unwrap());
     // Neither: what a session without a project would find, the user's own.
     let projectless = client.request("skills/list", json!({})).await.unwrap();
-    assert_eq!(names(&projectless, "skills"), ["broken", "gen-report", "medical-imaging", "skill-creator"]);
+    assert_eq!(names(&projectless, "skills"), ["broken", "gen-report", "chest-ct", "skill-creator"]);
 
     // A session: the skills it started with and what `/` offers, built-in commands first.
     let (session, _) = new_session(&client, &work).await;
     let mut events = demux.subscribe(&session);
     let listed = client.request("skills/list", json!({"session_id": session})).await.unwrap();
     schema.check("SkillsListResult", &listed);
-    assert_eq!(names(&listed, "skills"), ["lint", "gen-report", "medical-imaging", "skill-creator"]);
-    assert_eq!(names(&listed, "commands"), ["compact", "context", "skill:lint", "skill:gen-report", "skill:medical-imaging", "skill:skill-creator"]);
+    assert_eq!(names(&listed, "skills"), ["lint", "gen-report", "chest-ct", "skill-creator"]);
+    assert_eq!(names(&listed, "commands"), ["compact", "context", "skill:lint", "skill:gen-report", "skill:chest-ct", "skill:skill-creator"]);
     assert!(listed["commands"][0].get("skill").is_none());
     assert_eq!(listed["commands"][3]["hint"], "[week]");
     assert_eq!(listed["commands"][3]["skill"], json!(report));
@@ -500,7 +500,7 @@ async fn skills_list_reports_a_session_and_a_directory() {
     write_file(&env.home.path().join("skills/late/SKILL.md"), "---\nname: late\ndescription: Late.\n---\n");
     write_file(&report, "---\nname: gen-report\ndescription: Edited.\n---\nbody\n");
     let listed = client.request("skills/list", json!({"session_id": session})).await.unwrap();
-    assert_eq!(names(&listed, "commands"), ["compact", "context", "skill:lint", "skill:gen-report", "skill:medical-imaging", "skill:skill-creator"]);
+    assert_eq!(names(&listed, "commands"), ["compact", "context", "skill:lint", "skill:gen-report", "skill:chest-ct", "skill:skill-creator"]);
     assert_eq!(listed["commands"][3]["description"], "Edited.");
 
     for (params, kind) in [

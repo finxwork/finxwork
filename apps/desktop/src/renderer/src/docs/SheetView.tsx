@@ -12,7 +12,7 @@ import { useGeometry } from "./sheet/geometry";
 import { CellMenu, item, sep, type MenuItem } from "./sheet/CellMenu";
 import { ChartView } from "./sheet/ChartView";
 import { ImpactBar } from "./sheet/ImpactBar";
-import { decimalsOf, editTextOf, inputOp, isHardcoded, lensAt, lensText, MAX_PASTE, parseTsv, pasteOps, readable, readLenses, readSizes, selectionStats, sizeKey, sizesOf, statText, toMarkdown, toTsv, UNITS, withLens, writeLenses, writeSizes, type Lens, type SelectionStats, type Sizes, type Unit } from "./sheet/model";
+import { areaCellCount, colSelected, copyGrid, decimalsOf, editTextOf, expandSpans, inAreas, inSpans, inputOp, isDisjoint, isHardcoded, lensAt, lensText, MAX_PASTE, mergeSpans, parseTsv, pasteOps, rangesText, readable, readLenses, readSizes, rowSelected, selectedAreas, selectionStats, sizeKey, sizesOf, spanCount, statText, toggleLine, toMarkdown, toMarkdownGrid, toTsvGrid, UNITS, wholeCols, wholeRows, withLens, writeLenses, writeSizes, type Lens, type Sel, type SelectionStats, type Sizes, type Unit } from "./sheet/model";
 import { TraceBar, type Trace } from "./sheet/TraceBar";
 import { useScope } from "../session/scope";
 import { quoteToComposer, setDocInfo, setSheetViewing, type DocTab, type Jump } from "./state";
@@ -23,9 +23,6 @@ export { inputOp } from "./sheet/model";
 // the grid, and the sheets underneath. Cells are read from finx by blocks of rows as they come
 // into sight (doc/cells); edits go back as SheetOps (doc/apply) and come back with their impact,
 // which the grid lights up. The agent's edits arrive as a new revision of the document.
-
-/** A selection: from `anchor` to `focus`; `at`, when set, the active cell Enter and Tab have moved to inside it. */
-type Sel = { anchor: Pos; focus: Pos; at?: Pos };
 
 const BLOCK = 100;
 const HEAD_W = 44;
@@ -255,10 +252,19 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
 
   // ── editing ──
   // The active cell is where the selection began, as in Excel; the focus is the end that moves.
+  const maxRow = Math.max(used.r2, 1);
+  const maxCol = Math.max(used.c2, 1);
   const active = sel.at ?? sel.anchor;
   const activeCell = cache.current.cells.get(addr(active));
   const selected = areaOf(sel.anchor, sel.focus);
+  const areas = selectedAreas(sel);
+  const disjoint = isDisjoint(sel);
   const selectedRange = rangeText(selected);
+  const selectedRanges = rangesText(areas);
+  const colSpans = mergeSpans(areas, "cols");
+  const rowSpans = mergeSpans(areas, "rows");
+  const wholeColSpans = wholeCols(areas, maxRow);
+  const wholeRowSpans = wholeRows(areas, maxCol);
   const editable = !sheet?.protected && !!info.capabilities.includes("edit_values");
   const editText = editTextOf(activeCell);
   const shown = (p: Pos) => cache.current.cells.get(addr(p));
@@ -267,20 +273,23 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
   const [stats, setStats] = useState<SelectionStats | null>(null);
   // The selection last read, and whether anything was in it (a single cell has no figures but may hold a value).
   const [statsOf, setStatsOf] = useState({ key: "", any: false });
-  const statsKey = `${sheetName}!${selectedRange}`;
-  const inUse = { r1: Math.max(selected.r1, used.r1), c1: Math.max(selected.c1, used.c1), r2: Math.min(selected.r2, used.r2), c2: Math.min(selected.c2, used.c2) };
-  const inUseSize = inUse.r1 > inUse.r2 || inUse.c1 > inUse.c2 ? 0 : (inUse.r2 - inUse.r1 + 1) * (inUse.c2 - inUse.c1 + 1);
+  const statsKey = `${sheetName}!${selectedRanges}`;
+  const inUseAreas = areas
+    .map((a) => ({ r1: Math.max(a.r1, used.r1), c1: Math.max(a.c1, used.c1), r2: Math.min(a.r2, used.r2), c2: Math.min(a.c2, used.c2) }))
+    .filter((a) => a.r1 <= a.r2 && a.c1 <= a.c2);
+  const inUseSize = areaCellCount(inUseAreas);
   // Only a selection with something in it is offered to the agent; one too large to count is taken to have.
   const selectionFilled = inUseSize > STATS_MAX_CELLS || (inUseSize > 0 && statsOf.key === statsKey && statsOf.any);
   useEffect(() => {
     if (!sheet || sheet.chart || inUseSize === 0 || inUseSize > STATS_MAX_CELLS) return setStats(null);
     let gone = false;
     const timer = setTimeout(() => {
-      rpc.request("doc/cells", { session_id: session, doc_id: docId, sheet: sheet.name, range: rangeText(inUse) })
-        .then((r) => {
+      Promise.all(inUseAreas.map((a) => rpc.request("doc/cells", { session_id: session, doc_id: docId, sheet: sheet.name, range: rangeText(a) })))
+        .then((rs) => {
           if (gone) return;
-          setStats(selectionStats(r.cells, selected));
-          setStatsOf({ key: statsKey, any: r.cells.some((c) => !!c.text || !!c.value) });
+          const all = rs.flatMap((r) => r.cells);
+          setStats(selectionStats(all, areas));
+          setStatsOf({ key: statsKey, any: all.some((c) => !!c.text || !!c.value) });
         })
         .catch(() => !gone && setStats(null));
     }, 80);
@@ -288,13 +297,14 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
       gone = true;
       clearTimeout(timer);
     };
-  }, [docId, sheetName, selectedRange, sheet?.used, info.revision]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId, sheetName, selectedRanges, sheet?.used, info.revision]);
 
   useEffect(() => {
     if (!activeView || !sheet || sheet.chart) return;
-    setSheetViewing(session, { doc_id: docId, path: info.path, sheet: sheet.name, range: selectedRange, text: activeCell?.text ?? "" });
+    setSheetViewing(session, { doc_id: docId, path: info.path, sheet: sheet.name, range: selectedRanges, text: activeCell?.text ?? "" });
     return () => setSheetViewing(session, null, docId);
-  }, [activeView, session, docId, info.path, sheet, selectedRange, activeCell?.text]);
+  }, [activeView, session, docId, info.path, sheet, selectedRanges, activeCell?.text]);
 
   useEffect(() => {
     if (!jump || jump.doc_id !== docId || jump.anchor.kind !== "cells") return;
@@ -337,6 +347,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
   /** Excel's ⌘D / ⌘R: the selection's first row (or column) across it; one cell takes the one above (or left). */
   const fill = (direction: "down" | "right") => {
     if (!sheet || !editable) return;
+    if (disjoint) return void st.show(t("sheet.multiNotSupported"), undefined, true);
     const g = selected;
     const range = g.r1 === g.r2 && g.c1 === g.c2
       ? direction === "down" ? (g.r1 > 1 ? rangeText({ ...g, r1: g.r1 - 1 }) : null) : g.c1 > 1 ? rangeText({ ...g, c1: g.c1 - 1 }) : null
@@ -438,21 +449,34 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     void apply(ops);
   };
 
-  /** Excel's 插入 / 删除 of whole rows or columns: the selection's rows (or columns) are how many. */
+  /** Excel's 插入 / 删除 of whole rows or columns: supports both contiguous and disjoint multi-selection (applied back-to-front so indices stay valid). */
   const restructure = (kind: StructureKind) => {
     if (!sheet || !editable) return;
     const rows = kind === "insert_rows" || kind === "delete_rows";
-    const at = rows ? selected.r1 : selected.c1;
-    const count = rows ? selected.r2 - selected.r1 + 1 : selected.c2 - selected.c1 + 1;
+    const spans = rows ? rowSpans : colSpans;
+    const count = spanCount(spans);
     reshaped.current = true;
     setFilter(null);
     const what = rows ? t("sheet.rowsN", { count }) : t("sheet.colsN", { count });
-    void edited(() => rpc.request("doc/structure", { session_id: session, doc_id: docId, sheet: sheet.name, kind, at, count, base_revision: revision() }), t(`sheet.did_${kind}`, { what }));
+    if (disjoint) {
+      const first = Math.max(1, spans[0][0]);
+      setSel(rows ? { anchor: { r: first, c: 1 }, focus: { r: first, c: maxCol } } : { anchor: { r: 1, c: first }, focus: { r: maxRow, c: first } });
+    }
+    void edited(async () => {
+      let last!: DocApplyResult;
+      for (let i = spans.length - 1; i >= 0; i--) {
+        const [at, end] = spans[i];
+        last = await rpc.request("doc/structure", { session_id: session, doc_id: docId, sheet: sheet.name, kind, at, count: end - at + 1, base_revision: revision() });
+        if (i > 0) made(last);
+      }
+      return last;
+    }, t(`sheet.did_${kind}`, { what }));
   };
 
   /** Excel's 排序: by the active cell's column; one cell sorts the data around it, its first row a header. */
   const sortBy = (descending: boolean) => {
     if (!sheet || !editable) return;
+    if (disjoint) return void st.show(t("sheet.multiNotSupported"), undefined, true);
     const multi = selected.r2 > selected.r1;
     const range = multi ? selectedRange : rangeText({ r1: used.r1, c1: used.c1, r2: used.r2, c2: used.c2 });
     void edited(() => rpc.request("doc/sort", { session_id: session, doc_id: docId, sheet: sheet.name, range, by: colName(active.c), descending, header: !multi, base_revision: revision() }), t(descending ? "sheet.sortedDown" : "sheet.sortedUp", { col: colName(active.c) }));
@@ -527,7 +551,9 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     }
   };
   /** One cell selected stands for its whole column, as a unit is a column's. */
-  const lensArea = () => (selected.r1 === selected.r2 && selected.c1 === selected.c2 ? { r1: 1, c1: selected.c1, r2: MAX_ROWS, c2: selected.c1 } : selected);
+  const lensAreas = (): Area[] => (!disjoint && selected.r1 === selected.r2 && selected.c1 === selected.c2 ? [{ r1: 1, c1: selected.c1, r2: MAX_ROWS, c2: selected.c1 }] : areas);
+  const applyLens = (change: { unit?: Unit; decimals?: (had: number | null) => number | null }) =>
+    setSheetLenses(lensAreas().reduce((acc, a) => withLens(acc, a, change), sheetLenses ?? []));
   const activeLens = lensAt(sheetLenses, active.r, active.c);
 
   // ── finding (⌘F, as Excel's 查找) ──
@@ -652,33 +678,50 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     void openRef(st, { path: info.path, rel: null, kind: "file" }, undefined, "system");
   };
 
-  const cellsInSelection = async () => {
+  const cellsInAreas = async (list: readonly Area[]) => {
     if (!sheet) throw new Error(t("sheet.empty"));
-    return rpc.request("doc/cells", { session_id: session, doc_id: docId, sheet: sheet.name, range: selectedRange });
+    const rs = await Promise.all(list.map((a) => rpc.request("doc/cells", { session_id: session, doc_id: docId, sheet: sheet.name, range: rangeText(a) })));
+    return rs.flatMap((r) => r.cells);
   };
 
   /** The selection's shown text, by address, as read from finx (cells out of sight included). */
   const selectionText = async () => {
-    const result = await cellsInSelection();
-    const values = new Map(result.cells.map((cell) => [cell.cell, cell.text]));
+    const cells = await cellsInAreas(areas);
+    const values = new Map(cells.map((cell) => [cell.cell, cell.text]));
     return (cell: string) => values.get(cell);
   };
 
   const copySelection = async () => {
+    const gridCopy = copyGrid(areas);
+    if (!gridCopy) return void st.show(t("sheet.multiCopyRefused"), undefined, true);
     try {
-      await navigator.clipboard.writeText(toTsv(selected, await selectionText()));
+      await navigator.clipboard.writeText(toTsvGrid(gridCopy.rowSpans, gridCopy.colSpans, await selectionText()));
       st.show(t("sheet.copied"));
+    } catch (error) { st.show(errorText(error), undefined, true); }
+  };
+
+  const copyMarkdown = async () => {
+    const gridCopy = copyGrid(areas);
+    if (!gridCopy) return void st.show(t("sheet.multiCopyRefused"), undefined, true);
+    try {
+      await copyAs(toMarkdownGrid(gridCopy.rowSpans, gridCopy.colSpans, await selectionText()), t("sheet.copied"));
     } catch (error) { st.show(errorText(error), undefined, true); }
   };
 
   /** ⌘X: the selection copied, then cleared (values only, as the grid copies). */
   const cutSelection = async () => {
     if (!sheet || !editable) return;
+    if (disjoint) return void st.show(t("sheet.multiNotSupported"), undefined, true);
     const range = selectedRange;
     try {
-      await navigator.clipboard.writeText(toTsv(selected, await selectionText()));
+      await navigator.clipboard.writeText(toTsvGrid([[selected.r1, selected.r2]], [[selected.c1, selected.c2]], await selectionText()));
     } catch (error) { return st.show(errorText(error), undefined, true); }
     void apply([{ op: "clear", sheet: sheet.name, range }]);
+  };
+
+  const clearSelection = () => {
+    if (!sheet || !editable) return;
+    void apply(areas.map((a) => ({ op: "clear", sheet: sheet.name, range: rangeText(a) })));
   };
 
   /** Paste from the menu, where no paste event comes: the clipboard's text, read here. */
@@ -700,40 +743,45 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
 
   const quoteSelection = async () => {
     if (!sheet) return;
-    const count = (selected.r2 - selected.r1 + 1) * (selected.c2 - selected.c1 + 1);
-    let text = t("sheet.selectionSummary", { range: `${sheet.name}!${selectedRange}`, count });
+    const count = areaCellCount(areas);
+    let text = t("sheet.selectionSummary", { range: `${sheet.name}!${selectedRanges}`, count });
     if (count <= 200) {
       try {
-        text = `${sheet.name}!${selectedRange}\n\n${toMarkdown(selected, await selectionText())}`;
+        const values = await selectionText();
+        const gridCopy = copyGrid(areas);
+        const body = gridCopy
+          ? toMarkdownGrid(gridCopy.rowSpans, gridCopy.colSpans, values)
+          : areas.map((a) => `${rangeText(a)}\n\n${toMarkdown(a, values)}`).join("\n\n");
+        text = `${sheet.name}!${selectedRanges}\n\n${body}`;
       } catch (error) {
         st.show(errorText(error), undefined, true);
         return;
       }
     }
     // What the person sees in a unit is said, so the agent does not take the values for what is shown (§8.8).
-    const shownIn = lensAt(sheetLenses, selected.r1, selected.c1);
+    const shownIn = lensAt(sheetLenses, active.r, active.c);
     if (shownIn && shownIn.unit !== 1) text += `\n\n${t("sheet.lensQuote", { unit: t(`sheet.unit${shownIn.unit}`) })}`;
-    quoteToComposer(session, { quote: { path: info.path, doc_id: docId, sheet: sheet.name, range: selectedRange, text } });
+    quoteToComposer(session, { quote: { path: info.path, doc_id: docId, sheet: sheet.name, range: selectedRanges, text } });
     st.show(t("sheet.quoted"));
     scope?.leave?.();
   };
 
   // ── moving ──
-  const reveal = (p: Pos) => {
+  const reveal = (p: Pos, axis: "both" | "x" | "y" = "both") => {
     const el = scroller.current;
     if (!el) return;
-    const top = rowY(p.r) + HEAD_H;
-    const bottom = rowY(p.r + 1) + HEAD_H;
-    const left = colLeft[p.c] + HEAD_W;
-    const right = colLeft[p.c + 1] + HEAD_W;
     const z = zoomRef.current;
-    const st = el.scrollTop / z;
-    const sl = el.scrollLeft / z;
-    if (p.r > frozen.rows) {
+    if (axis !== "x" && p.r > frozen.rows) {
+      const top = rowY(p.r) + HEAD_H;
+      const bottom = rowY(p.r + 1) + HEAD_H;
+      const st = el.scrollTop / z;
       if (top - frozenH < st + HEAD_H) el.scrollTop = (top - HEAD_H - frozenH) * z;
       else if (bottom > st + el.clientHeight / z) el.scrollTop = (bottom - el.clientHeight / z) * z;
     }
-    if (p.c > frozen.cols) {
+    if (axis !== "y" && p.c > frozen.cols) {
+      const left = colLeft[p.c] + HEAD_W;
+      const right = colLeft[p.c + 1] + HEAD_W;
+      const sl = el.scrollLeft / z;
       if (left - frozenW < sl + HEAD_W) el.scrollLeft = (left - HEAD_W - frozenW) * z;
       else if (right > sl + el.clientWidth / z) el.scrollLeft = (right - el.clientWidth / z) * z;
     }
@@ -741,7 +789,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
   const go = (p: Pos, extend: boolean) => {
     const q = { r: Math.min(MAX_ROWS, Math.max(1, p.r)), c: Math.min(MAX_COLS, Math.max(1, p.c)) };
     reach(q.r, q.c);
-    setSel((s) => (extend ? { anchor: s.anchor, focus: q } : { anchor: q, focus: q }));
+    setSel((s) => (extend ? { anchor: s.anchor, focus: q, ...(s.extra?.length ? { extra: s.extra } : {}) } : { anchor: q, focus: q }));
     requestAnimationFrame(() => reveal(q));
     // Moving on puts out what your last edit lit downstream; what the agent changed stays till dismissed.
     setLit((l) => (l?.mine ? null : l));
@@ -807,7 +855,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     } else if (e.key === "F2") {
       editable && setEditing({ text: editText, inBar: false });
     } else if ((e.key === "Backspace" || e.key === "Delete") && sheet && editable) {
-      void apply([{ op: "clear", sheet: sheet.name, range: selectedRange }]);
+      clearSelection();
     } else if (mod && e.key.toLowerCase() === "z") {
       void history(e.shiftKey ? "doc/redo" : "doc/undo");
     } else if (mod && e.key.toLowerCase() === "x") {
@@ -904,7 +952,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
       const title = lensed !== null ? t("sheet.lensTip", { raw: d!.text, shown: lensed, unit: unitName(lens!.unit) }) : hard ? t("sheet.hardcoded") : (d?.formula ?? undefined);
       panes[paneOf(a.r, a.c)].push(
         <div key={`${r}:${c}`} data-cell={key} className={cls} style={style} title={title}>
-          {text && <span style={span > w ? { width: span, background: d?.look?.fill ? undefined : "var(--sht-bg)" } : { maxWidth: "100%" }}>{text}</span>}
+          {text && <span style={span > w ? { maxWidth: Math.max(0, span - 8), background: d?.look?.fill || lit?.cells.has(key) || found.has(key) ? undefined : "var(--sht-bg)" } : { maxWidth: "100%" }}>{text}</span>}
         </div>,
       );
     }
@@ -926,6 +974,79 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     );
   });
 
+  const isMac = window.finx?.platform === "mac" || (!window.finx && /Mac|iPhone|iPad/.test(navigator.platform));
+  const isRight = (e: React.MouseEvent) => e.button === 2 || (e.button === 0 && e.ctrlKey && isMac);
+  const isAdd = (e: React.MouseEvent) => (isMac ? e.metaKey : e.ctrlKey) && !isRight(e);
+  const pickCol = (ev: { clientX: number }) => {
+    const el = scroller.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const z = zoomRef.current;
+    const x = (ev.clientX - rect.left) / z - HEAD_W;
+    if (x < 0) return frozen.cols > 0 ? 1 : colAt(el.scrollLeft / z);
+    return x < frozenW ? colAt(x) : colAt(x + el.scrollLeft / z);
+  };
+  const pickRow = (ev: { clientY: number }) => {
+    const el = scroller.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const z = zoomRef.current;
+    const y = (ev.clientY - rect.top) / z - HEAD_H;
+    if (y < 0) return frozen.rows > 0 ? 1 : rowAt(el.scrollTop / z);
+    return y < frozenH ? rowAt(y) : rowAt(y + el.scrollTop / z);
+  };
+  /** Column / row header selection: click, drag-sweep, ⇧-click range extend, and ⌘/Ctrl non-contiguous add/toggle. */
+  const selectHeader = (axis: "cols" | "rows", n: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (editing) commit(editing.text);
+    const cols = axis === "cols";
+    const wholeSpans = cols ? wholeColSpans : wholeRowSpans;
+    const lineSel = (a: number, b: number, extra?: Area[]): Sel =>
+      cols
+        ? { anchor: { r: 1, c: a }, focus: { r: maxRow, c: b }, ...(extra?.length ? { extra } : {}) }
+        : { anchor: { r: a, c: 1 }, focus: { r: b, c: maxCol }, ...(extra?.length ? { extra } : {}) };
+    if (isRight(e)) {
+      if (!inSpans(wholeSpans, n)) setSel(lineSel(n, n));
+      grid.current?.focus();
+      return;
+    }
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const adding = isAdd(e);
+    const togglePending = adding && inSpans(wholeSpans, n);
+    let anchorLine = n;
+    let keptExtra: Area[] | undefined;
+    if (adding) {
+      keptExtra = [...(sel.extra ?? []), selected];
+      if (!togglePending) setSel(lineSel(n, n, keptExtra));
+    } else if (e.shiftKey) {
+      anchorLine = cols ? sel.anchor.c : sel.anchor.r;
+      keptExtra = sel.extra;
+      setSel(lineSel(anchorLine, n, keptExtra));
+    } else {
+      setSel(lineSel(n, n));
+    }
+    setLit((l) => (l?.mine ? null : l));
+    grid.current?.focus();
+    let last = n;
+    let dragged = false;
+    const move = (ev: MouseEvent) => {
+      const q = cols ? pickCol(ev) : pickRow(ev);
+      if (q === null || q === last) return;
+      last = q;
+      dragged = true;
+      setSel(lineSel(anchorLine, q, keptExtra));
+      reveal(cols ? { r: 1, c: q } : { r: q, c: 1 }, cols ? "x" : "y");
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      if (togglePending && !dragged) setSel((s) => toggleLine(s, axis, n, cols ? maxRow : maxCol));
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   /** Headers: of columns that scroll, of rows that scroll, and frozen ones with the corner. */
   const heads: Record<"hc" | "hr" | "hx", React.ReactNode[]> = { hc: [], hr: [], hx: [] };
   /** A column shown in a unit other than the file's: its header says which (§8.8). */
@@ -936,29 +1057,27 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
   for (const c of colsShown) {
     if (!widths[c]) continue;
     const fc = c <= frozen.cols;
-    const on = c >= g.c1 && c <= g.c2;
-    heads[fc ? "hx" : "hc"].push(<div key={`h${c}`} className={`sht-h col ${on ? "on" : ""}`} style={{ left: HEAD_W + colLeft[c], top: 0, width: widths[c], height: HEAD_H }} onMouseDown={(e) => {
-      e.stopPropagation();
-      setSel({ anchor: { r: 1, c }, focus: { r: Math.max(used.r2, 1), c } });
-      grid.current?.focus();
-    }} onContextMenu={(e) => {
+    const on = colSelected(areas, c);
+    heads[fc ? "hx" : "hc"].push(<div key={`h${c}`} className={`sht-h col ${on ? "on" : ""}`} style={{ left: HEAD_W + colLeft[c], top: 0, width: widths[c], height: HEAD_H }} onMouseDown={(e) => selectHeader("cols", c, e)} onContextMenu={(e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!(c >= g.c1 && c <= g.c2 && g.r1 === 1)) setSel({ anchor: { r: 1, c }, focus: { r: Math.max(used.r2, 1), c } });
+      if (!inSpans(wholeColSpans, c)) setSel({ anchor: { r: 1, c }, focus: { r: maxRow, c } });
       grid.current?.focus();
       setMenuAt({ x: e.clientX, y: e.clientY });
     }}>{colName(c)}{unitOfCol(c) && <span className="sht-unit">{unitName(unitOfCol(c)!)}</span>}</div>);
   }
-  /** Dragging a header's edge, as in Excel: the column (or row) before it takes the new size. */
+  /** Dragging a header's edge, as in Excel: applies to every selected whole column (or row) when dragging one of them. */
   const resize = (kind: "cols" | "rows", n: number, start: number, from: number) => (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     const z = zoomRef.current;
+    const whole = kind === "cols" ? wholeColSpans : wholeRowSpans;
+    const targets = inSpans(whole, n) ? expandSpans(whole) : [n];
     const move = (ev: MouseEvent) => {
       const size = Math.max(kind === "cols" ? 8 : 6, Math.round(start + ((kind === "cols" ? ev.clientX : ev.clientY) - from) / z));
       setSized((x) => {
         const next = { cols: new Map(x.cols), rows: new Map(x.rows) };
-        next[kind].set(sizeKey(sheetName, n), size);
+        for (const k of targets) next[kind].set(sizeKey(sheetName, k), size);
         return next;
       });
     };
@@ -971,25 +1090,30 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
-  /** Double-clicking a header's edge, as in Excel: the column fits the widest text it holds (of the rows read so far). */
+  /** Double-clicking a header's edge, as in Excel: fits each selected whole column (or this column alone) to its widest read text. */
   const autofit = (c: number) => {
     const ctx = document.createElement("canvas").getContext("2d");
     if (!ctx) return;
     const font = getComputedStyle(grid.current ?? document.body);
-    let best = 0;
+    const mono = getComputedStyle(document.documentElement).getPropertyValue("--mono");
+    const targets = inSpans(wholeColSpans, c) ? expandSpans(wholeColSpans) : [c];
+    const targetSet = new Set(targets);
+    const best = new Map<number, number>();
     for (const [key, d] of cache.current.cells) {
       const at = parseAddr(key);
-      if (!at || at.c !== c || mergeAt(at.r, at.c)) continue;
+      if (!at || !targetSet.has(at.c) || mergeAt(at.r, at.c)) continue;
       const asFormula = showFormulas && !!d.formula;
       const text = asFormula ? d.formula! : (lensText(d, lensAt(sheetLenses, at.r, at.c), i18n.language) ?? d.text);
       if (!text) continue;
-      ctx.font = `${d.look?.italic ? "italic " : ""}${d.look?.bold ? 600 : 400} ${font.fontSize} ${asFormula ? getComputedStyle(document.documentElement).getPropertyValue("--mono") : font.fontFamily}`;
-      best = Math.max(best, ctx.measureText(text).width);
+      ctx.font = `${d.look?.italic ? "italic " : ""}${d.look?.bold ? 600 : 400} ${font.fontSize} ${asFormula ? mono : font.fontFamily}`;
+      best.set(at.c, Math.max(best.get(at.c) ?? 0, ctx.measureText(text).width));
     }
-    const size = best ? Math.min(800, Math.ceil(best) + 12) : (sheet?.default_width ?? 64);
     setSized((x) => {
       const next = { cols: new Map(x.cols), rows: new Map(x.rows) };
-      next.cols.set(sizeKey(sheetName, c), size);
+      for (const col of targets) {
+        const w = best.get(col) ?? 0;
+        next.cols.set(sizeKey(sheetName, col), w ? Math.min(800, Math.ceil(w) + 12) : (sheet?.default_width ?? 64));
+      }
       return next;
     });
   };
@@ -1008,15 +1132,11 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     const h = rowY(r + 1) - rowY(r);
     if (!h) continue;
     const fr = r <= frozen.rows;
-    const on = r >= g.r1 && r <= g.r2;
-    heads[fr ? "hx" : "hr"].push(<div key={`r${r}`} className={`sht-h row ${on ? "on" : ""}`} style={{ left: 0, top: HEAD_H + rowY(r), width: HEAD_W, height: h }} onMouseDown={(e) => {
-      e.stopPropagation();
-      setSel({ anchor: { r, c: 1 }, focus: { r, c: Math.max(used.c2, 1) } });
-      grid.current?.focus();
-    }} onContextMenu={(e) => {
+    const on = rowSelected(areas, r);
+    heads[fr ? "hx" : "hr"].push(<div key={`r${r}`} className={`sht-h row ${on ? "on" : ""}`} style={{ left: 0, top: HEAD_H + rowY(r), width: HEAD_W, height: h }} onMouseDown={(e) => selectHeader("rows", r, e)} onContextMenu={(e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!(r >= g.r1 && r <= g.r2 && g.c1 === 1)) setSel({ anchor: { r, c: 1 }, focus: { r, c: Math.max(used.c2, 1) } });
+      if (!inSpans(wholeRowSpans, r)) setSel({ anchor: { r, c: 1 }, focus: { r, c: maxCol } });
       grid.current?.focus();
       setMenuAt({ x: e.clientX, y: e.clientY });
     }}><span className={filter?.sheet === sheetName && r > used.r1 ? "sht-filtered" : undefined}>{r}</span></div>);
@@ -1084,10 +1204,13 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
   const pane = (p: Pane) => (
     <>
       {panes[p]}
+      {(sel.extra ?? []).map((a, i) => paneOf(a.r1, a.c1) === p && (
+        <div key={`ex${i}`} className="sht-sel extra" style={place(a.r1, a.c1, colLeft[a.c2 + 1] - colLeft[a.c1], rowY(a.r2 + 1) - rowY(a.r1))} />
+      ))}
       {selPane === p && <div className={`sht-sel ${multi ? "multi" : ""}`} style={selBox} />}
       {!multi && paneOf(active.r, active.c) === p && <div className="sht-active" style={activeBox} />}
       {filling && paneOf(filling.to.r1, filling.to.c1) === p && <div className="sht-fill-to" style={place(filling.to.r1, filling.to.c1, colLeft[filling.to.c2 + 1] - colLeft[filling.to.c1], rowY(filling.to.r2 + 1) - rowY(filling.to.r1))} />}
-      {selPane === p && editable && !editing && !filling && (
+      {selPane === p && editable && !editing && !filling && !disjoint && (
         <div className="sht-fill-handle" aria-label={t("sheet.fillHandle")} title={t("sheet.fillHandle")} onMouseDown={dragFill}
           style={{ left: (selBox.left as number) + (selBox.width as number) - 4, top: (selBox.top as number) + (selBox.height as number) - 4 }} />
       )}
@@ -1095,7 +1218,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
         <input
           autoFocus
           className="sht-edit"
-          style={{ ...activeBox, minWidth: activeBox.width, zIndex: 3 }}
+          style={{ ...activeBox, minWidth: activeBox.width, zIndex: 6 }}
           value={editing.text}
           onChange={(e) => setEditing({ text: e.target.value, inBar: false })}
           onBlur={() => editing && commit(editing.text)}
@@ -1128,16 +1251,16 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
     return m ? { r: m.r1, c: m.c1 } : { r, c };
   };
 
-  const nRowsSel = g.r2 - g.r1 + 1;
-  const nColsSel = g.c2 - g.c1 + 1;
+  const nRowsSel = spanCount(rowSpans);
+  const nColsSel = spanCount(colSpans);
   const formulas = !!info.capabilities.includes("edit_formulas");
   const menuItems: MenuItem[] = [
-    item(t("sheet.cut"), () => void cutSelection(), { kbd: "⌘X", disabled: !editable }),
+    item(t("sheet.cut"), () => void cutSelection(), { kbd: "⌘X", disabled: !editable || disjoint }),
     item(t("sheet.copy"), () => void copySelection(), { kbd: "⌘C" }),
     item(t("sheet.paste"), () => void pasteClipboard(), { kbd: "⌘V", disabled: !editable }),
     item(t("sheet.copyAs"), undefined, { items: [
-      item(t("sheet.copyMarkdown"), () => void selectionText().then((text) => copyAs(toMarkdown(selected, text), t("sheet.copied"))).catch((e) => st.show(errorText(e), undefined, true))),
-      item(t("sheet.copyAddress"), () => void copyAs(`${sheetName}!${selectedRange}`, t("sheet.copiedAddress"))),
+      item(t("sheet.copyMarkdown"), () => void copyMarkdown()),
+      item(t("sheet.copyAddress"), () => void copyAs(`${sheetName}!${selectedRanges}`, t("sheet.copiedAddress"))),
     ] }),
     sep,
     item(t("sheet.insert"), undefined, { disabled: !editable, items: [
@@ -1148,17 +1271,17 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
       item(t("sheet.deleteRows", { count: nRowsSel }), () => restructure("delete_rows"), { danger: true }),
       item(t("sheet.deleteCols", { count: nColsSel }), () => restructure("delete_columns"), { danger: true }),
     ] }),
-    item(t("sheet.clear"), () => sheet && void apply([{ op: "clear", sheet: sheet.name, range: selectedRange }]), { kbd: "⌫", disabled: !editable }),
+    item(t("sheet.clear"), clearSelection, { kbd: "⌫", disabled: !editable }),
     sep,
     item(t("sheet.filter"), undefined, { items: [
       item(t("sheet.filterByValue"), () => void filterByValue()),
       item(t("sheet.filterClear"), () => setFilter(null), { disabled: filter?.sheet !== sheetName }),
     ] }),
-    item(t("sheet.sort"), undefined, { disabled: !editable, items: [
+    item(t("sheet.sort"), undefined, { disabled: !editable || disjoint, items: [
       item(t("sheet.sortUp"), () => sortBy(false)),
       item(t("sheet.sortDown"), () => sortBy(true)),
     ] }),
-    item(t("sheet.fill"), undefined, { disabled: !editable, items: [
+    item(t("sheet.fill"), undefined, { disabled: !editable || disjoint, items: [
       item(t("sheet.fillDown"), () => fill("down"), { kbd: "⌘D" }),
       item(t("sheet.fillRight"), () => fill("right"), { kbd: "⌘R" }),
     ] }),
@@ -1203,13 +1326,13 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
         </div>
         <span className="sht-sep" />
         <div className="sht-group sht-numfmt">
-          <select className="sht-unitsel" aria-label={t("sheet.unit")} title={t("sheet.unitTip")} value={activeLens?.unit ?? 1} onChange={(e) => setSheetLenses(e.target.value === "reset" ? [] : withLens(sheetLenses ?? [], lensArea(), { unit: Number(e.target.value) as Unit }))}>
+          <select className="sht-unitsel" aria-label={t("sheet.unit")} title={t("sheet.unitTip")} value={activeLens?.unit ?? 1} onChange={(e) => (e.target.value === "reset" ? setSheetLenses([]) : applyLens({ unit: Number(e.target.value) as Unit }))}>
             {UNITS.map((u) => <option key={u} value={u}>{unitName(u)}</option>)}
             {/* Everything on the sheet back as the file shows it. */}
             {!!sheetLenses?.length && <option value="reset">{t("sheet.lensClear")}</option>}
           </select>
-          <button className="tb sht-dec" title={t("sheet.decimalsMore")} aria-label={t("sheet.decimalsMore")} onClick={() => setSheetLenses(withLens(sheetLenses ?? [], lensArea(), { decimals: (had) => Math.min(10, (had ?? decimalsOf(activeCell?.text ?? "")) + 1) }))}>.00</button>
-          <button className="tb sht-dec" title={t("sheet.decimalsLess")} aria-label={t("sheet.decimalsLess")} onClick={() => setSheetLenses(withLens(sheetLenses ?? [], lensArea(), { decimals: (had) => Math.max(0, (had ?? decimalsOf(activeCell?.text ?? "")) - 1) }))}>.0</button>
+          <button className="tb sht-dec" title={t("sheet.decimalsMore")} aria-label={t("sheet.decimalsMore")} onClick={() => applyLens({ decimals: (had) => Math.min(10, (had ?? decimalsOf(activeCell?.text ?? "")) + 1) })}>.00</button>
+          <button className="tb sht-dec" title={t("sheet.decimalsLess")} aria-label={t("sheet.decimalsLess")} onClick={() => applyLens({ decimals: (had) => Math.max(0, (had ?? decimalsOf(activeCell?.text ?? "")) - 1) })}>.0</button>
         </div>
         <div className="sht-tools-end">
           {busy && <span className="mini-spin" />}
@@ -1303,18 +1426,22 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
               if (!p) return;
               if (editing) commit(editing.text);
               // A right-click (⌃-click on a Mac) keeps a selection it lands in, as Excel does, and drags nothing; the menu comes on contextmenu.
-              if (e.button === 2 || (e.button === 0 && e.ctrlKey && window.finx?.platform === "mac")) {
-                const inside = p.r >= selected.r1 && p.r <= selected.r2 && p.c >= selected.c1 && p.c <= selected.c2;
-                if (!inside) go(p, false);
+              if (isRight(e)) {
+                if (!inAreas(areas, p.r, p.c)) go(p, false);
                 grid.current?.focus();
                 return;
               }
               if (e.button !== 0) return;
-              go(p, e.shiftKey);
+              if (isAdd(e)) {
+                setSel({ anchor: p, focus: p, extra: [...(sel.extra ?? []), selected] });
+                setLit((l) => (l?.mine ? null : l));
+              } else {
+                go(p, e.shiftKey);
+              }
               grid.current?.focus();
               const move = (ev: MouseEvent) => {
                 const q = pick(ev as unknown as React.MouseEvent);
-                if (q) setSel((s) => ({ anchor: s.anchor, focus: q }));
+                if (q) setSel((s) => ({ anchor: s.anchor, focus: q, ...(s.extra?.length ? { extra: s.extra } : {}) }));
               };
               const up = () => {
                 window.removeEventListener("mousemove", move);
@@ -1330,7 +1457,7 @@ export function SheetView({ rpc, session, tab, jump, activeView = true }: { rpc:
               if (!p) return;
               if (editing) commit(editing.text);
               // A click outside the selection selects that cell first, as in Excel.
-              if (p.r < selected.r1 || p.r > selected.r2 || p.c < selected.c1 || p.c > selected.c2) setSel({ anchor: p, focus: p });
+              if (!inAreas(areas, p.r, p.c)) setSel({ anchor: p, focus: p });
               grid.current?.focus();
               setMenuAt({ x: e.clientX, y: e.clientY });
             }}

@@ -414,6 +414,12 @@ pub struct McpServerView {
     /// The service's logo as a `data:` URI, when one was found (mcp-design §13.9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// The server's reported or installed version, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    /// Whether checking for updates is supported for this connector.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update_supported: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -465,6 +471,44 @@ pub struct McpToolsResult {
 pub struct McpCheckResult {
     pub server: McpServerView,
     pub tools: Vec<McpToolSummary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpUpdateStatus {
+    UpToDate,
+    UpdateAvailable,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct McpUpdateCheckResult {
+    pub name: String,
+    pub status: McpUpdateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    /// Whether one-click upgrade (`mcp/upgrade`) can be performed for this update.
+    #[serde(default)]
+    pub can_upgrade: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct McpUpgradeResult {
+    pub server: McpServerView,
+    pub tools: Vec<McpToolSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<String>,
 }
 
 /// `mcp/changed`: a server's status, cached result or configuration changed; or a sign-in

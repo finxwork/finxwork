@@ -830,6 +830,98 @@ impl Server {
         self.mcp_changed(Some(&params.name));
         Ok(McpCheckResult { server: view, tools })
     }
+
+    pub async fn mcp_check_update(&self, params: McpServerParams) -> Result<McpUpdateCheckResult, RpcError> {
+        let server = self.clone();
+        let cwd = params.cwd.clone();
+        let name = params.name.clone();
+        let (ws, config, editable) = tokio::task::spawn_blocking(move || -> Result<_, RpcError> {
+            let ws = server.workspace(cwd.as_deref())?;
+            let config = ws
+                .mcp_servers
+                .iter()
+                .find(|s| s.name == name)
+                .cloned()
+                .ok_or_else(|| RpcError::invalid_params(format!("no MCP server named {name}")))?;
+            let view = views::view(&ws, &server.0.home, &config, None);
+            Ok((ws, config, view.editable))
+        })
+        .await
+        .map_err(blocking_error)??;
+        finx_core::mcp::update::check_update(&self.0.home, &ws, &config, editable)
+            .await
+            .map_err(RpcError::internal)
+    }
+
+    pub async fn mcp_upgrade(&self, params: McpServerParams) -> Result<McpUpgradeResult, RpcError> {
+        let key = format!("mcp-upgrade:{}", params.name);
+        let lock = self.customize().checks.lock().entry(key).or_default().clone();
+        let _one_at_a_time = lock.lock().await;
+
+        let server = self.clone();
+        let cwd = params.cwd.clone();
+        let name = params.name.clone();
+        let (config, view) = tokio::task::spawn_blocking(move || -> Result<_, RpcError> {
+            let ws = server.workspace(cwd.as_deref())?;
+            let config = ws
+                .mcp_servers
+                .iter()
+                .find(|s| s.name == name)
+                .cloned()
+                .ok_or_else(|| RpcError::invalid_params(format!("no MCP server named {name}")))?;
+            let view = views::view(&ws, &server.0.home, &config, None);
+            Ok((config, view))
+        })
+        .await
+        .map_err(blocking_error)??;
+
+        if let Some(m) = finx_core::connectors::for_server(self.0.home.root(), &config) {
+            let previous_version = finx_core::connectors::installed_version(self.0.home.root(), &m);
+            let installed = finx_core::connectors::install(self.0.home.root(), &m.id)
+                .await
+                .map_err(RpcError::internal)?;
+            let checked = self.mcp_check(params).await?;
+            return Ok(McpUpgradeResult {
+                server: checked.server,
+                tools: checked.tools,
+                previous_version,
+                current_version: Some(installed.version),
+            });
+        }
+
+        let Some(spec) = finx_core::mcp::update::parse_package(&config) else {
+            return Err(RpcError::invalid_params("当前连接器不支持自动升级"));
+        };
+        if !view.editable {
+            return Err(RpcError::invalid_params("只读或仓库配置中的连接器不支持自动升级"));
+        }
+
+        let latest = finx_core::mcp::update::fetch_latest_for_package(&spec)
+            .await
+            .map_err(RpcError::internal)?;
+        let next_args = finx_core::mcp::update::rewrite_args_for_version(&config.args, &spec, &latest);
+        let key_path = config::join_key(&config::join_key("mcp_servers", &config.name), "args");
+        self.config_write(ConfigWriteParams {
+            layer: view.layer,
+            cwd: params.cwd.clone(),
+            expected_version: None,
+            edits: vec![ConfigEdit {
+                key_path,
+                value: json!(next_args),
+                merge: ConfigMerge::Replace,
+            }],
+        })
+        .await?;
+
+        let checked = self.mcp_check(params).await?;
+        let current_version = checked.server.server_version.clone().or(Some(latest));
+        Ok(McpUpgradeResult {
+            server: checked.server,
+            tools: checked.tools,
+            previous_version: view.server_version,
+            current_version,
+        })
+    }
 }
 
 /// What to watch in a project for the page: its `.finx` (configuration), its skill folders

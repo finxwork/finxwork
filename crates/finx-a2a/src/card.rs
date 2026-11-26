@@ -121,6 +121,7 @@ impl Card {
                 Auth::None => "none".to_string(),
                 Auth::ApiKey { header, .. } => format!("api_key:{header}"),
                 Auth::Bearer { .. } => "bearer".to_string(),
+                Auth::Basic { .. } => "basic".to_string(),
             },
             accepts: card
                 .accepts
@@ -370,11 +371,22 @@ fn parse_scheme(scheme: &Value) -> Result<Option<Auth>, CardError> {
             .get("scheme")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        return Ok(name.eq_ignore_ascii_case("bearer").then(|| Auth::Bearer {
-            token: String::new(),
-        }));
+        if name.eq_ignore_ascii_case("bearer") {
+            return Ok(Some(Auth::Bearer {
+                token: String::new(),
+            }));
+        }
+        // Basic sends the password with every request; the endpoint is HTTPS (or this
+        // machine) by `net::check_url`, so it never travels in the clear.
+        if name.eq_ignore_ascii_case("basic") {
+            return Ok(Some(Auth::Basic {
+                username: String::new(),
+                password: String::new(),
+            }));
+        }
+        return Ok(None);
     }
-    // OAuth2, OpenID Connect, mutual TLS: not in this version.
+    // OAuth2, OpenID Connect, mutual TLS, other HTTP schemes (Digest…): not in this version.
     Ok(None)
 }
 
@@ -594,6 +606,20 @@ mod tests {
         .await
         .expect_err("unsupported");
         assert_eq!(error.kind(), "bot_card_unsupported");
+    }
+
+    #[test]
+    fn a_basic_card_asks_for_a_user_name_and_a_password() {
+        let card_url = Url::parse("https://example.com/.well-known/agent-card.json").expect("URL");
+        let mut card = card_json("https://example.com/a2a");
+        card["securitySchemes"] = json!({ "pw": { "httpAuthSecurityScheme": { "scheme": "Basic" } } });
+        card["securityRequirements"] = json!([{ "schemes": { "pw": { "list": [] } } }]);
+        let card = parse_card(&card, &card_url).expect("card");
+        assert_eq!(card.auth.scheme(), "basic");
+        let mut digest = card_json("https://example.com/a2a");
+        digest["securitySchemes"] = json!({ "d": { "httpAuthSecurityScheme": { "scheme": "digest" } } });
+        digest["securityRequirements"] = json!([{ "schemes": { "d": { "list": [] } } }]);
+        assert_eq!(parse_card(&digest, &card_url).expect_err("digest").kind(), "bot_card_unsupported");
     }
 
     #[test]

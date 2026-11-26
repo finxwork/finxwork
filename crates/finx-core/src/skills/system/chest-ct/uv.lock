@@ -3,6 +3,25 @@ revision = 3
 requires-python = "==3.12.*"
 
 [[package]]
+name = "chest-ct"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "numpy" },
+    { name = "scikit-image" },
+    { name = "scipy" },
+    { name = "simpleitk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = "==1.26.4" },
+    { name = "scikit-image", specifier = "==0.24.0" },
+    { name = "scipy", specifier = "==1.13.1" },
+    { name = "simpleitk", specifier = "==2.3.1" },
+]
+
+[[package]]
 name = "imageio"
 version = "2.38.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -25,25 +44,6 @@ dependencies = [
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/19/8c/0f2ff2a8b7513e68871a74740c17a504b0488c679b379e6445ebb7bd78dc/lazy_loader-0.6.tar.gz", hash = "sha256:2f4b7824d6401958639008a0cae20c776b61dff619accd6890693e2de8260167" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/23/93/4e45e37f26c820216704b36b8e67cc55c490a7abd287a78a26a2c0e21386/lazy_loader-0.6-py3-none-any.whl", hash = "sha256:77253be3391b06124a0e16105bd663b6c54470af1a9ca8e1cf026f38d58ed056" },
-]
-
-[[package]]
-name = "medical-imaging"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "numpy" },
-    { name = "scikit-image" },
-    { name = "scipy" },
-    { name = "simpleitk" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = "==1.26.4" },
-    { name = "scikit-image", specifier = "==0.24.0" },
-    { name = "scipy", specifier = "==1.13.1" },
-    { name = "simpleitk", specifier = "==2.3.1" },
 ]
 
 [[package]]

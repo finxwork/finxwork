@@ -5,6 +5,7 @@ import type { SpatialFinding } from "@finx/protocol";
 import { docAttachment } from "../composer/attachments";
 import { toComposer } from "../composer/inbox";
 import type { DocAnchor, DocTab, Jump } from "../docs/state";
+import { usePanelWidth } from "../panelWidth";
 import { FindingsList } from "./FindingsList";
 import { partQuote, sealFindings, sizeLabel, type Finding, type PartInfo } from "./model";
 import type { Axis, Viewer, ViewName } from "./scene";
@@ -13,9 +14,12 @@ import { BrickSource, sliceAt, slicePlane, toVoxel, windowsOf, type Dims, type G
 import "./spatial.css";
 
 const SOURCE_COLOR: Record<Finding["source"], string> = { reference: "#6aa7ff", ai: "#f59e0b", user: "#6fd97a" };
+const SIDE_MIN_WIDTH = 240;
+const CANVAS_MIN_ROOM = 220;
 
 export default function SpatialDocView({ rpc, session, tab, jump }: { rpc: RpcClient; session: string; tab: DocTab; jump: Jump | null }) {
   const { t } = useTranslation("session");
+  const side = usePanelWidth("finxwork.spatialSideWidth", () => CANVAS_MIN_ROOM, SIDE_MIN_WIDTH);
   const spatial = tab.info.spatial;
   const volume = spatial?.volume ?? null;
   const geom = useMemo<Geometry | null>(
@@ -315,6 +319,7 @@ export default function SpatialDocView({ rpc, session, tab, jump }: { rpc: RpcCl
   ];
 
   const hasAiFinding = (spatial?.findings ?? []).some((f) => f.source === "ai");
+  const hasSide = Boolean(volume || (spatial?.findings.length ?? 0) > 0);
   const meshIds = new Set((spatial?.meshes ?? []).map((m) => m.id));
   // Hidden structures (helpers a script builds other parts from) have no surface: never pending.
   const pendingStructures = (spatial?.structures ?? []).filter((s) => !s.hidden && !meshIds.has(s.id));
@@ -355,7 +360,7 @@ export default function SpatialDocView({ rpc, session, tab, jump }: { rpc: RpcCl
         </div>
       )}
 
-      <div className="spv-body">
+      <div className={`spv-body ${side.resizing ? "resizing" : ""}`}>
         {has3d && (
           <div className="spv-canvas" ref={host}>
             {!viewer && !viewerError && <div className="spv-msg">{t("spatial.loading")}</div>}
@@ -415,8 +420,23 @@ export default function SpatialDocView({ rpc, session, tab, jump }: { rpc: RpcCl
           </div>
         )}
 
-        {(volume || spatial.findings.length > 0) && (
-          <div className={`spv-side ${!has3d ? "full" : ""}`}>
+        {has3d && hasSide && (
+          <div
+            className="spv-grip no-drag"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("spatial.resizeSide")}
+            tabIndex={0}
+            {...side.grip}
+          />
+        )}
+
+        {hasSide && (
+          <aside
+            ref={side.panel}
+            className={`spv-side ${!has3d ? "full" : ""}`}
+            style={side.style(!has3d)}
+          >
             {volume && source && (
               <SliceView
                 volume={volume}
@@ -443,7 +463,7 @@ export default function SpatialDocView({ rpc, session, tab, jump }: { rpc: RpcCl
                 onAsk={askFinding}
               />
             )}
-          </div>
+          </aside>
         )}
       </div>
 

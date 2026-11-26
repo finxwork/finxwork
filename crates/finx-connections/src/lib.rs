@@ -49,6 +49,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 /// first; what it leaves out comes from the model's maker in the public catalog, by its id.
 pub(crate) fn declared_model(m: &ConnectionModel) -> finx_llm::catalog::ModelToml {
     finx_llm::catalog::ModelToml {
+        api: m.api.clone(),
         name: Some(m.name.clone()),
         names: m.names.clone(),
         context_window: m.context_window.map(|window| window.clamp(1024, 2_000_000)),
@@ -297,6 +298,7 @@ impl Manager {
                     currency: Default::default(),
                     compat: Compat {
                         thinking_format: adapter::thinking_format(&record.adapter_id),
+                        auth_header: adapter::auth_header(&record.adapter_id),
                         ..Compat::default()
                     },
                     listing: finx_llm::catalog::Listing {
@@ -714,6 +716,7 @@ fn provider_id(adapter_id: &str, identity: &str) -> String {
 }
 struct RequestLease {
     entry: Arc<Entry>,
+    api: Option<String>,
     generation: u64,
     manager: Weak<Manager>,
     http: reqwest::Client,
@@ -757,15 +760,22 @@ impl ConnectionAuthorizer for Manager {
         if !e.record.read().enabled || !matches!(e.view.read().state, ConnectionState::Ready) {
             return Err(ConnectionError::new("connection_disabled", "连接当前不可用").llm());
         }
-        if !adapter::supported(&e.record.read().adapter_id, model)
-            || !e.view.read().models.iter().any(|m| m.id == model)
-        {
+        let api = e
+            .view
+            .read()
+            .models
+            .iter()
+            .find(|m| m.id == model)
+            .map(|m| m.api.clone());
+        let Some(api) = api.filter(|_| adapter::supported(&e.record.read().adapter_id, model))
+        else {
             return Err(ConnectionError::new("unsupported_capability", "模型不在当前目录中").llm());
-        }
+        };
         let cancellation = e.cancel.read().clone();
         Ok(Box::new(RequestLease {
             generation: e.generation.load(Ordering::Acquire),
             entry: e,
+            api,
             manager: self.myself.clone(),
             http,
             _running: running,
@@ -823,7 +833,16 @@ impl ConnectionRequest for RequestLease {
                 manager.publish();
             }
         }
-        result.map_err(|e| e.llm())
+        result
+            .map(|mut auth| {
+                if self.api.as_deref() == Some("anthropic-messages")
+                    && let Some(prefix) = auth.base_url.trim_end_matches('/').strip_suffix("/v1")
+                {
+                    auth.base_url = prefix.to_string();
+                }
+                auth
+            })
+            .map_err(|e| e.llm())
     }
     fn cancellation(&self) -> CancellationToken {
         self.cancellation.clone()

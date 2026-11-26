@@ -289,7 +289,7 @@ async fn a_credential_stays_out_of_the_bot_file_and_its_answers() {
     let added = client
         .request(
             "bots/add",
-            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": "test-key"}),
+            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": {"kind": "secret", "value": "test-key"}}),
         )
         .await
         .expect("added with its key");
@@ -320,7 +320,7 @@ async fn a_failed_add_leaves_no_credential_behind() {
     let failed = client
         .request(
             "bots/add",
-            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": "test-key"}),
+            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": {"kind": "secret", "value": "test-key"}}),
         )
         .await
         .unwrap_err();
@@ -351,7 +351,7 @@ async fn a_credential_is_never_written_to_the_logs_or_an_error() {
     let added = client
         .request(
             "bots/add",
-            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": "test-key"}),
+            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": {"kind": "secret", "value": "test-key"}}),
         )
         .await
         .expect("added");
@@ -405,4 +405,74 @@ async fn a_credential_is_never_written_to_the_logs_or_an_error() {
         assert!(!text.contains("test-key"), "the logs hold no credential");
         assert!(!text.contains("wrong-secret-key"), "the logs hold no credential");
     }
+}
+
+/// Tells the fake to take another credential scheme from now on.
+fn switch_auth(fake: &Fake, mode: &str) {
+    use std::io::Read as _;
+    use std::io::Write as _;
+    let address = fake.url.trim_start_matches("http://").trim_end_matches('/');
+    let mut stream = std::net::TcpStream::connect(address).expect("the fake");
+    write!(stream, "POST /control/auth/{mode} HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    assert!(answer.starts_with("HTTP/1.1 204"), "{answer}");
+}
+
+#[tokio::test]
+async fn basic_then_a_new_scheme_after_reading_the_card_again() {
+    let env = TestEnv::new("manual", CONFIG).await;
+    let fake = fake(&["--basic"]);
+    let (_child, client, incoming) = env.spawn_rpc(&["serve", "--stdio"]);
+    native_init(&client).await;
+    let mut events = route(incoming);
+
+    let card = preview(&client, &fake.url).await;
+    assert_eq!(card["auth"], "basic");
+    // A secret is not a user name and password.
+    let wrong = client
+        .request("bots/add", json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": {"kind": "secret", "value": "test-key"}}))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(wrong), "bot_auth_required");
+    let added = client
+        .request(
+            "bots/add",
+            json!({"url": fake.url, "card_sha256": card["card_sha256"], "credential": {"kind": "basic", "username": "test-user", "password": "test-key"}}),
+        )
+        .await
+        .expect("added with a user name and password");
+    let bot = added["bot"]["id"].as_str().unwrap().to_string();
+    assert_eq!(added["bot"]["source"]["auth"], "basic");
+    let file = std::fs::read_to_string(env.home.path().join("bots").join(&bot).join("bot.json")).unwrap();
+    assert!(!file.contains("test-key"), "the password is not in bot.json: {file}");
+
+    let opened = client
+        .request("bots/open", json!({"bot_id": bot, "events": {"exclude": ["text_delta", "thinking_delta", "tool_call_delta", "tool_progress"]}}))
+        .await
+        .expect("opened");
+    let session = opened["session_id"].as_str().unwrap().to_string();
+    say(&client, &session, "你好").await;
+    assert_eq!(sent(&until_end(&mut events).await), ["hello (1)"]);
+
+    // The other side moves to an API key; reading the card now shows it and waits for the owner.
+    switch_auth(&fake, "key");
+    let reread = client.request("bots/reread", json!({"bot_id": bot})).await.expect("read again");
+    assert_eq!(reread["bot"]["source"]["auth"], "api_key");
+    assert!(reread["bot"]["source"]["needs_review"].is_string(), "{reread}");
+    // The new credential settles it.
+    let wrong = client
+        .request("bots/credential", json!({"bot_id": bot, "credential": {"kind": "basic", "username": "a", "password": "b"}}))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(wrong), "bot_auth_required");
+    let set = client
+        .request("bots/credential", json!({"bot_id": bot, "credential": {"kind": "secret", "value": "test-key"}}))
+        .await
+        .expect("new key");
+    assert!(set["bot"]["source"]["needs_review"].is_null(), "{set}");
+    assert!(!serde_json::to_string(&set).unwrap().contains("test-key"));
+    say(&client, &session, "还在吗").await;
+    let after = sent(&until_end(&mut events).await);
+    assert_eq!(after.len(), 1, "{after:?}");
 }

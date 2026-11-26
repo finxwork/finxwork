@@ -100,6 +100,12 @@ pub fn view(workspace: &Workspace, home: &FinxHome, server: &McpServerConfig, li
         auth = McpAuthKind::Oauth;
         auth_state = Some(McpAuthState::NeedsLogin);
     }
+    let server_version = managed
+        .as_ref()
+        .and_then(|m| crate::connectors::installed_version(home.root(), m))
+        .or_else(|| super::update::parse_package(server).and_then(|p| p.pinned_version))
+        .or_else(|| cache::read(&home.mcp_cache_dir(), server, &dir).and_then(|c| c.server_version));
+    let update_supported = super::update::is_supported(home.root(), server);
     McpServerView {
         auth_partial: managed.as_ref().filter(|m| crate::connectors::partial_permissions(home.root(), m)).map(|_| true),
         connector: managed.map(|m| m.id),
@@ -118,6 +124,8 @@ pub fn view(workspace: &Workspace, home: &FinxHome, server: &McpServerConfig, li
         status,
         identity: finx_mcp::identity::identity(server),
         icon: icon(home, server),
+        server_version,
+        update_supported,
     }
 }
 
@@ -247,6 +255,8 @@ fn untrusted(workspace: &Workspace, home: &FinxHome) -> Vec<McpServerView> {
                 },
                 identity: finx_mcp::identity::identity(&server),
                 icon: icon(home, &server),
+                server_version: None,
+                update_supported: false,
             })
         })
         .collect()

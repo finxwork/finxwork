@@ -8,6 +8,7 @@ import { draftThinking, offersThinking } from "../format";
 import { useStore } from "../store";
 import { Avatar, hues, shapes } from "./Avatar";
 import { ModelBlocked, ModelRows } from "./ModelRows";
+import { CredentialFields, credentialOf, emptyDraft } from "./Credential";
 
 const hueNames = Object.keys(hues) as AvatarHue[];
 const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)];
@@ -29,7 +30,7 @@ export function BotSheet() {
   const [url, setUrl] = useState("");
   const [reading, setReading] = useState(false);
   const [preview, setPreview] = useState<RemotePreview | null>(null);
-  const [credential, setCredential] = useState("");
+  const [draft, setDraft] = useState(emptyDraft);
   const [problem, setProblem] = useState<string | null>(null);
   const readCard = async () => {
     const given = url.trim();
@@ -58,19 +59,24 @@ export function BotSheet() {
   };
   const addExternal = async () => {
     if (!preview || reading) return;
-    if (preview.auth !== "none" && !credential.trim()) {
+    const credential = credentialOf(preview.auth, draft);
+    if (preview.auth !== "none" && !credential) {
       setProblem(t("sheet.add.needsCredential"));
       return;
     }
     setReading(true);
     setProblem(null);
     try {
-      const made = await st.call("bots/add", { url: url.trim(), card_sha256: preview.card_sha256, credential: preview.auth === "none" ? undefined : credential.trim() });
+      const made = await st.call("bots/add", { url: url.trim(), card_sha256: preview.card_sha256, credential: credential ?? undefined });
       st.selectBot(made.bot.id);
       closeAll();
     } catch (e) {
       const err = e as RpcError;
-      setProblem(t(err.kind === "bot_card_changed" ? "sheet.add.errors.changed" : "sheet.add.errors.other"));
+      setProblem(t(
+        err.kind === "bot_card_changed" ? "sheet.add.errors.changed"
+        : err.kind === "bot_auth_required" ? "sheet.add.needsCredential"
+        : "sheet.add.errors.other",
+      ));
     } finally {
       setReading(false);
     }
@@ -145,7 +151,6 @@ export function BotSheet() {
                 onChange={(e) => setUrl(e.target.value)}
               />
             </label>
-            <p className="bs-notice">{t("sheet.add.hint")}</p>
             {problem && <p className="bs-problem">{problem}</p>}
             <div className="sheet-foot">
               <button type="button" className="link left" onClick={closeAll}>
@@ -181,15 +186,14 @@ export function BotSheet() {
             </dl>
             <p className="bs-notice">{t(isLocal ? "sheet.add.noticeLocal" : "sheet.add.notice", { host: preview.host })}</p>
             {preview.auth !== "none" && (
-              <label className="bs-name">
-                <span>{t("sheet.add.credential")}</span>
-                <input className="field" type="password" value={credential} autoFocus onChange={(e) => setCredential(e.target.value)} />
-                <span className="sub">{t("sheet.add.credentialHint")}</span>
-              </label>
+              <div>
+                <CredentialFields auth={preview.auth} draft={draft} onChange={setDraft} autoFocus />
+                <p className="bs-hint">{t("sheet.add.credentialHint")}</p>
+              </div>
             )}
             {problem && <p className="bs-problem">{problem}</p>}
             <div className="sheet-foot">
-              <button type="button" className="link left" onClick={() => { setPreview(null); setProblem(null); }}>
+              <button type="button" className="link left" onClick={() => { setPreview(null); setProblem(null); setDraft(emptyDraft); }}>
                 {t("sheet.add.back")}
               </button>
               <button type="button" className="btn" onClick={closeAll}>

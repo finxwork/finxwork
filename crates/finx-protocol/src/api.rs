@@ -58,6 +58,7 @@ pub mod method {
     pub const MODELS_SHOW: &str = "models/show";
     pub const MODELS_CONFIGURE: &str = "models/configure";
     pub const MODELS_CATALOG: &str = "models/catalog";
+    pub const MODELS_COMPLETE: &str = "models/complete";
     pub const PROVIDERS_ADD: &str = "providers/add";
     pub const PROVIDERS_UPDATE: &str = "providers/update";
     pub const PROVIDERS_REMOVE: &str = "providers/remove";
@@ -174,6 +175,8 @@ pub mod method {
     pub const MCP_LIST: &str = "mcp/list";
     pub const MCP_TOOLS: &str = "mcp/tools";
     pub const MCP_CHECK: &str = "mcp/check";
+    pub const MCP_CHECK_UPDATE: &str = "mcp/check_update";
+    pub const MCP_UPGRADE: &str = "mcp/upgrade";
     /// Server notification to connections that called `mcp/list`.
     pub const MCP_CHANGED: &str = "mcp/changed";
     pub const MCP_PROBE: &str = "mcp/probe";
@@ -222,6 +225,10 @@ pub mod method {
     pub const BOTS_PREVIEW: &str = "bots/preview";
     /// Adds another subject's bot (bot-contacts-design §4.2, §5.2).
     pub const BOTS_ADD: &str = "bots/add";
+    /// Replaces an external bot's credential (bot-contacts-design §5.6).
+    pub const BOTS_CREDENTIAL: &str = "bots/credential";
+    /// Reads an external bot's card again now, instead of waiting a day (§5.6).
+    pub const BOTS_REREAD: &str = "bots/reread";
     /// A bot's uploaded avatar.
     pub const BOTS_AVATAR: &str = "bots/avatar";
     /// Loads or attaches a bot's conversation, making it when there is none yet.
@@ -1545,6 +1552,27 @@ pub struct ModelsShowParams {
     pub shown: bool,
 }
 
+/// Parameters of `models/complete`: a stateless single-turn text completion with no session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelsCompleteParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    pub prompt: String,
+    /// `provider/model-id`; omitted uses the current default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+/// Result of `models/complete`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelsCompleteResult {
+    pub text: String,
+    /// `provider/model-id` that answered.
+    pub model: String,
+}
+
 /// How a provider authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1882,6 +1910,9 @@ pub struct ConnectionModel {
     /// The name in each language the application offers, by language tag.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub names: std::collections::BTreeMap<String, String>,
+    /// Wire API when it differs from the connection's default (e.g. `anthropic-messages`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
     pub context_window: Option<u32>,
     pub max_output_tokens: Option<u32>,
     #[serde(default)] pub reasoning: bool,

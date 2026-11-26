@@ -147,6 +147,46 @@ fn private_dir(path: &Path) -> Result<(), String> {
 pub fn installed(home: &Path, m: &Manifest) -> bool {
     release(home, m).join("receipt.json").is_file() && binary(home, m).is_file()
 }
+
+/// The version currently installed under `~/.finx/connectors/<id>/releases/`: prefers the
+/// manifest's own version when verified, otherwise the most recently installed receipt found.
+pub fn installed_version(home: &Path, m: &Manifest) -> Option<String> {
+    if verify(home, m).is_ok() {
+        return Some(m.version.clone());
+    }
+    let releases = root(home, m).join("releases");
+    let entries = std::fs::read_dir(releases).ok()?;
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let receipt_path = dir.join("receipt.json");
+        if !receipt_path.is_file() || !dir.join("cli").is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&receipt_path) else {
+            continue;
+        };
+        let Ok(receipt) = serde_json::from_slice::<Receipt>(&bytes) else {
+            continue;
+        };
+        let modified = std::fs::metadata(&receipt_path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().is_none_or(|(t, _)| modified > *t) {
+            best = Some((modified, receipt.version));
+        }
+    }
+    best.map(|(_, v)| v)
+}
+
+/// Download URL of the current platform's artifact (or any platform's artifact if unsupported here).
+pub fn artifact_url(m: &Manifest) -> Option<&str> {
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    m.artifacts
+        .get(&platform)
+        .or_else(|| m.artifacts.values().next())
+        .map(|a| a.url.as_str())
+}
 fn verify(home: &Path, m: &Manifest) -> Result<(), String> {
     let receipt: Receipt = serde_json::from_slice(
         &std::fs::read(release(home, m).join("receipt.json")).map_err(|_| "请先安装连接器")?,

@@ -475,7 +475,7 @@ export function recheckActive() {
 // ── from the conversation ──
 
 /** The file panel in front, in place of the browser's. */
-const showPanel = (st: Store) => st.set({ files: true, browser: false, background: false });
+const showPanel = (st: Store) => st.set({ files: true, filesMax: false, browserMax: false, background: false });
 
 /** A file opened from the conversation shows on its own: the tree stays closed unless the person opened it. */
 const fileOnly = (s: SessionFiles) => {

@@ -100,6 +100,7 @@ fn record(enabled: bool) -> Record {
             id: "flash".into(),
             name: "Flash".into(),
             names: Default::default(),
+            api: None,
             context_window: Some(1000000),
             max_output_tokens: None,
             reasoning: true,
@@ -859,4 +860,88 @@ async fn earlier_request_failure_does_not_overwrite_a_new_validation() {
         ConnectionState::Ready
     ));
     assert!(snapshot.connections[0].diagnostic.is_none());
+}
+
+#[tokio::test]
+async fn qwen_catalog_includes_anthropic_messages_models_and_strips_v1_base_url() {
+    let server = MockServer::start().await;
+    let env = Fake::new();
+    let mut q = QwenWork::new("test".into(), "account-a".into(), env.clone());
+    q.gateway = server.uri();
+    let body = json!({"catalog": [
+        {
+            "key": "flash",
+            "enable": true,
+            "format": "openai/chat-completions",
+            "is_reasoning": true,
+            "i18n": {"display_name": {"zh": "标准", "en": "Standard"}}
+        },
+        {
+            "key": "qwen4-max",
+            "enable": true,
+            "format": "anthropic/messages",
+            "is_reasoning": true,
+            "max_input_tokens": 1_000_000,
+            "thinking_config": {"effort": "high"},
+            "i18n": {"display_name": {"zh": "Qwen4-Max", "en": "Qwen4-Max"}}
+        },
+        {
+            "key": "future-only",
+            "enable": true,
+            "format": "unknown/protocol"
+        }
+    ]});
+    Mock::given(path("/api/desktop/chat-modes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    let models = q.catalog(&client()).await.unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "flash");
+    assert_eq!(models[0].api, None);
+    assert_eq!(models[1].id, "qwen4-max");
+    assert_eq!(models[1].name, "Qwen4-Max");
+    assert_eq!(models[1].api.as_deref(), Some("anthropic-messages"));
+    assert_eq!(models[1].default_thinking, ThinkingLevel::High);
+
+    // Publishing registers anthropic-messages with Bearer auth, and authorization strips `/v1`
+    // because AnthropicApi appends `/v1/messages`.
+    let dir = tempfile::tempdir().unwrap();
+    let llm = registry();
+    let mut r = record(true);
+    r.models = models;
+    save_config(dir.path(), &r);
+    let m = Manager::with_environment(dir.path().into(), &llm, env.clone());
+    let provider_id = format!("local-{}", r.connection_id);
+    let published = llm.resolve(&format!("{provider_id}/qwen4-max")).unwrap().model;
+    assert_eq!(published.api, "anthropic-messages");
+    assert_eq!(
+        published.compat.auth_header,
+        Some(finx_llm::model::AuthHeader::Bearer)
+    );
+    let entry = m.entry(&r.connection_id).unwrap();
+    let now = env.now();
+    env.set(
+        &r.connection_id,
+        &json!({
+            "identity": "account-a",
+            "session": {
+                "token": "tok-1",
+                "session_id": "sess-1",
+                "base": "https://api9.qwenwork.cn/v1",
+                "expires": now + 600_000,
+                "ttl": 600_000
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .unwrap();
+    let _ = entry;
+    let anthropic_lease = m.begin(&provider_id, "qwen4-max", client()).await.unwrap();
+    let auth = anthropic_lease.authorize(false).await.unwrap();
+    assert_eq!(auth.base_url, "https://api9.qwenwork.cn");
+    let openai_lease = m.begin(&provider_id, "flash", client()).await.unwrap();
+    let auth = openai_lease.authorize(false).await.unwrap();
+    assert_eq!(auth.base_url, "https://api9.qwenwork.cn/v1");
 }

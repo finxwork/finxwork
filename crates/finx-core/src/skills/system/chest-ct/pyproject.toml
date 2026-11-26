@@ -1,7 +1,7 @@
 [project]
-name = "medical-imaging"
+name = "chest-ct"
 version = "0.1.0"
-description = "Chest CT helper scripts for the FinxWork medical-imaging skill"
+description = "Chest CT helper scripts for the FinxWork chest-ct skill"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy==1.26.4",

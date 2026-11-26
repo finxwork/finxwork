@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../finx-core/src/skills/system/medical-imaging/scripts/chest_structures.py");
+const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../finx-core/src/skills/system/chest-ct/scripts/chest_structures.py");
 const MODULE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/python");
 
 /// What the script is run with: the interpreter, the script and its argument.
@@ -187,7 +187,7 @@ fn label() -> String {
 fn run(args: &[String]) -> i32 {
     let only = arg(args, "--only");
     let runner = Runner {
-        python: std::env::var("CT_EVAL_PYTHON").map_or_else(|_| home().join(".finx/cache/uv/envs/medical-imaging/bin/python"), |p| expand(&p)),
+        python: std::env::var("CT_EVAL_PYTHON").map_or_else(|_| home().join(".finx/cache/uv/envs/chest-ct/bin/python"), |p| expand(&p)),
         script: arg(args, "--script").map_or_else(|| PathBuf::from(SCRIPT), |p| expand(&p)),
         arg: arg(args, "--args").unwrap_or_default(),
     };

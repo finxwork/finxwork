@@ -4,11 +4,11 @@ import { useRef, useState, type CSSProperties, type KeyboardEvent, type PointerE
 // edge or moved by the arrow keys there, and kept for next time. The conversation keeps `room`
 // beside it at least.
 
-const minWidth = 360;
+const defaultMinWidth = 360;
 
-function savedWidth(key: string): number | null {
+function savedWidth(key: string, min: number): number | null {
   const n = Number(localStorage.getItem(key));
-  return Number.isFinite(n) && n >= minWidth ? n : null;
+  return Number.isFinite(n) && n >= min ? n : null;
 }
 
 export type PanelWidth = {
@@ -28,18 +28,18 @@ export type PanelWidth = {
  */
 const fit = (room: number): CSSProperties => ({ maxWidth: `calc(100% - ${room}px)` });
 
-export function usePanelWidth(key: string, room: () => number): PanelWidth {
+export function usePanelWidth(key: string, room: () => number, min = defaultMinWidth): PanelWidth {
   const panel = useRef<HTMLElement>(null);
-  const [width, setWidth] = useState<number | null>(() => savedWidth(key));
+  const [width, setWidth] = useState<number | null>(() => savedWidth(key, min));
   const [resizing, setResizing] = useState(false);
 
   /** The widest the panel may be: the conversation keeps its room. */
   const maxWidth = () => {
     const right = panel.current?.getBoundingClientRect().right ?? window.innerWidth;
     const left = panel.current?.parentElement?.getBoundingClientRect().left ?? 0;
-    return Math.max(minWidth, right - left - room());
+    return Math.max(min, right - left - room());
   };
-  const clamp = (w: number, most: number) => Math.round(Math.min(most, Math.max(minWidth, w)));
+  const clamp = (w: number, most: number) => Math.round(Math.min(most, Math.max(min, w)));
   const keep = (w: number) => {
     const next = clamp(w, maxWidth());
     setWidth(next);
@@ -48,7 +48,7 @@ export function usePanelWidth(key: string, room: () => number): PanelWidth {
 
   // The arrow keys on the edge: left widens, right narrows.
   const onKeyDown = (e: KeyboardEvent) => {
-    const now = panel.current?.getBoundingClientRect().width ?? minWidth;
+    const now = panel.current?.getBoundingClientRect().width ?? min;
     if (e.key === "ArrowLeft") keep(now + 24);
     else if (e.key === "ArrowRight") keep(now - 24);
     else return;
@@ -65,6 +65,7 @@ export function usePanelWidth(key: string, room: () => number): PanelWidth {
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       setResizing(false);
       setWidth((w) => {
         if (w !== null) localStorage.setItem(key, String(w));
@@ -73,6 +74,7 @@ export function usePanelWidth(key: string, room: () => number): PanelWidth {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   return {

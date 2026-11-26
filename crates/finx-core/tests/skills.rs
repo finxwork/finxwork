@@ -217,7 +217,7 @@ async fn the_model_reads_a_listed_skill_without_approval_and_resume_keeps_the_ca
             ("lint".to_string(), "project".to_string(), true),
             ("deploy".to_string(), "user".to_string(), false),
             ("pdf-tools".to_string(), "user".to_string(), true),
-            ("medical-imaging".to_string(), "system".to_string(), true),
+            ("chest-ct".to_string(), "system".to_string(), true),
             ("skill-creator".to_string(), "system".to_string(), false),
         ],
         "priority order: layers first, then paths within a root"
